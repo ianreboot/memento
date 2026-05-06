@@ -183,7 +183,7 @@ Bad: `"check some things"` (not yet substantive — set to `[pending]` and updat
 **Mission lifecycle:**
 - Open: set `mission_opened` to current timestamp, `mission_closed` to null
 - Close: the UserPromptSubmit hook sets `mission_closed` when it detects `/clear` or explicit project-shift commands. You do not need to handle these.
-- **Claude-driven closure:** If you complete the last upcoming task and the user confirms satisfaction ("that's done", "ship it", "looks good"), set `mission_closed` to the current timestamp and `upcoming` to `[]`. Do not wait for the hook — a closed mission is a clear signal to the next session that this work is finished.
+- **Claude-driven closure:** If you complete the last upcoming task and the user confirms satisfaction ("that's done", "ship it", "looks good"), set `mission_closed` to the current timestamp, `upcoming` to `[]`, and `state_reason` to `"mission complete"`. Do not wait for the hook — a closed mission is a clear signal to the next session that this work is finished.
 - New mission: when `mission_closed` is set and the user starts working on something new, write a new journal with `mission_opened` reset and `mission_closed` null. Preserve old `summary` as historical context if relevant.
 
 **`[pending]` at recovery**: If you recover and `mission` is `[pending]`, treat the journal as if no mission exists. Set the mission from the user's next substantive request. Do not carry `[pending]` across sessions — it provides no recovery value.

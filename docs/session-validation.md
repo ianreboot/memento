@@ -84,8 +84,6 @@ A clean agent with no prior context was given both journal files and asked 20 qu
 
 5. **Overall verdict** — *"The core value proposition works. After a compaction event, the journal is injected, and a recovering Claude gets mission context, completed task history, and upcoming tasks. Atomic writes and symlink safety are implemented. Silent failure on all error paths. The /clear lifecycle detection works. The journal content is genuinely useful for recovery."*
 
-Full audit report: `/tmp/memento-debug-validation.md` (generated during the session).
-
 ---
 
 ## Bugs Found

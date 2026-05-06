@@ -27,7 +27,7 @@
 
 ---
 
-Claude Code forgets everything when context compaction fires. Memento keeps a lightweight task journal on disk and re-injects it automatically, so Claude picks up exactly where it left off — no questions asked. Install takes 10 seconds, costs under 400 tokens per session, and runs invisibly in the background.
+Claude Code forgets everything when context compaction fires. Memento keeps a lightweight task journal on disk and re-injects it automatically, so Claude picks up exactly where it left off — no questions asked. Install takes 10 seconds, costs under 400 tokens per injection, and runs invisibly in the background.
 
 ## The Problem
 
@@ -43,7 +43,7 @@ The best it can do is search for artifacts and reverse-engineer intent. That is 
 
 ## How It Works
 
-Memento uses two Claude Code hooks and a small JSON journal file:
+Memento uses two Claude Code hooks, a SKILL.md behavioral spec, and a small JSON journal file:
 
 ```
 Session starts
@@ -55,6 +55,7 @@ You send a message
 Claude completes a task
   └── Claude writes a journal entry to disk via the Write tool
         task name, result, context (what you said or what the tool showed)
+        (SKILL.md instructs Claude when and what to journal — the behavioral spec)
 
 Compaction happens
   └── SessionStart hook fires again → full journal re-injected → Claude resumes instantly
@@ -104,6 +105,8 @@ bash ~/.claude/hooks/install.sh --uninstall
 
 Requires Node.js 14.14+. Restart Claude Code after installing.
 
+**Verify:** In a new session, ask Claude: `"what does memento have on this session?"` — Claude should confirm the journal path and acknowledge no prior journal exists yet.
+
 ## What Gets Journaled
 
 Each journal entry captures three things:
@@ -136,7 +139,7 @@ The journal tracks whether the current mission is `active`, `blocked`, or `waiti
 
 ### Rolling window
 
-The journal keeps the 8 most recent completed tasks plus up to 5 upcoming tasks. Older entries are folded into a one-line rolling summary. The journal file stays under 6KB and the context injection costs under 400 tokens — negligible against a 200k context window.
+The journal keeps the 8 most recent completed tasks plus up to 5 upcoming tasks. Older entries are folded into a one-line rolling summary. The journal file stays under 6KB and each injection costs under 400 tokens — negligible against a 200k context window. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
 
 ### Entry format
 

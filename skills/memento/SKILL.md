@@ -23,7 +23,7 @@ Understanding who does what prevents confusion:
 | **`memento-tracker.js`** (UserPromptSubmit hook) | Detects mission-close events, emits reminder |
 | **Claude (you)** | Writes journal entries via the Write tool after task completion |
 
-Claude is the only writer. Hooks never write journal entries — they only read, inject, and handle mission lifecycle events (/clear detection).
+Claude is the primary writer — all task entries come from Claude. Hooks may write to the journal for housekeeping only: pruning stale entries, closing missions on /clear, and updating the project tag. Hooks never create task entries.
 
 ## Journal Location
 
@@ -46,7 +46,7 @@ Or when a journal exists:
 
 The `proj:` field in the header shows the current project detected from git — update `journal.project` to match this whenever you write the journal. The hook auto-updates `project` at session start, but Claude should keep it current mid-session too.
 
-If no `[MEMENTO]` header appears (hook failure), the path is `~/.claude/.memento/<username>.json`.
+If no `[MEMENTO]` header appears (hook failure), the path is `~/.claude/.memento/<username>.json`. Create the `.memento/` directory first if it does not exist (`mkdir -p` via Bash).
 
 ## Journal `project` Field
 
@@ -62,7 +62,7 @@ When switching projects, also open a new mission (new `mission_opened`, clear `m
 
 ```json
 {
-  "mission":        "string — one sentence describing the current goal",
+  "mission":        "string — one sentence describing the current goal (max 200 chars)",
   "mission_opened": "ISO 8601 timestamp",
   "mission_closed": "ISO 8601 timestamp or null",
   "project":        "string — project tag (from hook header)",
@@ -78,7 +78,7 @@ When switching projects, also open a new mission (new `mission_opened`, clear `m
       "ts":     "ISO 8601 timestamp"
     }
   ],
-  "upcoming": ["string — next task + one concrete anchor", "..."]
+  "upcoming": ["string — next task + one concrete anchor (max 150 chars)", "..."]
 }
 ```
 
@@ -96,12 +96,14 @@ A task is a discrete action that changes project state or produces something the
 - Completing a refactor
 
 **Is not a task:**
-- Reading a file to understand context
-- Running a status check
-- Answering a question
+- Reading a file to understand context (no action taken as a result)
+- Running a status check with no follow-up action
+- Answering a factual question
 - A single bash command that is part of a larger task
 
 When in doubt: if the user could meaningfully say "did you do X yet?", it is a task.
+
+**Edge case**: If a "status check" or "question" reveals something actionable and you act on it (e.g., "run the tests" reveals failures and you start fixing them), the discovery is the task. Journal it.
 
 ## Writing Journal Entries — The Fidelity Rule
 
@@ -151,13 +153,21 @@ If none of these applies, **omit `ctx` entirely**. An absent ctx is honest. A fa
 }
 ```
 
+## Write Timing
+
+**Write the journal as soon as each task completes, not at the end of the response.**
+
+If you complete 3 tasks in one response, issue 3 separate Write tool calls — one after each task. Batching all writes to the end of the response defeats the purpose: if compaction fires mid-response, nothing is saved.
+
+**Practical rule**: After any action that passes the "did you do X yet?" test, immediately write the journal before starting the next action.
+
+For `in_progress`: write the journal with `in_progress` set *before* you issue the first tool call for a multi-step or async task. Update `progress` after each sub-step by writing again. If a task is fast (single tool call, completes in one step), skip `in_progress` and go straight to a `completed` entry.
+
 ## Entry Compression
 
-Keep entries terse. Omit articles (a/an/the) and filler words. Use abbreviations for common technical terms. Preserve numbers, file paths, function names, and error strings exactly.
+Keep entries terse. Omit articles (a/an/the) and filler words. Abbreviate common terms (`auth`, `db`, `cfg`, `impl`, `env`, etc.). Preserve numbers, file paths, function names, and error strings exactly.
 
-Common abbreviations: `auth`, `db`, `cfg`, `impl`, `err`, `req`, `res`, `fn`, `env`, `svc`
-
-`->` for result, `|` for separation, `:` for key-value.
+Priority: factual completeness over grammatical correctness. `"fix auth middleware PASETO expiry"` is better than `"Fixed the authentication middleware's PASETO token expiry handling."`
 
 ## Mission
 
@@ -173,8 +183,10 @@ Bad: `"check some things"` (not yet substantive — set to `[pending]` and updat
 **Mission lifecycle:**
 - Open: set `mission_opened` to current timestamp, `mission_closed` to null
 - Close: the UserPromptSubmit hook sets `mission_closed` when it detects `/clear` or explicit project-shift commands. You do not need to handle these.
-- **Claude-driven closure:** If you complete the last upcoming task and the user confirms satisfaction ("that's done", "ship it", "looks good"), set `mission_closed` to the current timestamp. Do not wait for the hook — a closed mission is a clear signal to the next session that this work is finished.
+- **Claude-driven closure:** If you complete the last upcoming task and the user confirms satisfaction ("that's done", "ship it", "looks good"), set `mission_closed` to the current timestamp and `upcoming` to `[]`. Do not wait for the hook — a closed mission is a clear signal to the next session that this work is finished.
 - New mission: when `mission_closed` is set and the user starts working on something new, write a new journal with `mission_opened` reset and `mission_closed` null. Preserve old `summary` as historical context if relevant.
+
+**`[pending]` at recovery**: If you recover and `mission` is `[pending]`, treat the journal as if no mission exists. Set the mission from the user's next substantive request. Do not carry `[pending]` across sessions — it provides no recovery value.
 
 ## Mission State
 
@@ -191,7 +203,7 @@ Bad: `"check some things"` (not yet substantive — set to `[pending]` and updat
 
 `in_progress` captures a task that started but hasn't completed — the exact scenario where compaction is most damaging.
 
-**Set `in_progress` before starting a multi-step task** (build + deploy, multi-file refactor, long test run):
+**Write the journal with `in_progress` set before you begin any task that will not complete in a single tool call.** This includes: multi-step sequences (build + deploy, multi-file refactor), launching an async agent and waiting for output, producing multiple output files, or any work where you know the next 2+ steps. Write immediately — do not wait for the task to finish.
 ```json
 "in_progress": {
   "task": "deploy auth service",
@@ -206,6 +218,8 @@ Bad: `"check some things"` (not yet substantive — set to `[pending]` and updat
 
 **Recovery:** If `in_progress` is set, the first action after compaction recovery is to verify its current state (re-run the relevant test, check if the file exists, check the deploy endpoint), then resume from where `progress` indicates — not from scratch.
 
+**Task abandoned by user**: If the user abandons a task ("never mind", "skip that", "let's do Y instead"), clear `in_progress` (set to null) without adding it to `completed`. Remove the abandoned task from `upcoming` if present. Do not record abandoned tasks as completed — they produced no result.
+
 ## Upcoming Tasks
 
 List tasks you know are coming next based on explicit user statements or clear logical dependencies. Maximum 5.
@@ -219,6 +233,7 @@ Bad: `"push to GitHub"` (which repo? which branch?)
 Bad: `"fix the bug"` (which file? which error?)
 
 Update `upcoming` when:
+- **You know the plan**: when you begin a sequence of tasks, write all known next steps into `upcoming` before starting the first one. This is the primary compaction defense — if compaction fires mid-sequence, the recovering Claude needs to see what was planned.
 - A new task becomes clearly necessary from a completed task's result
 - The user mentions what they want to do next
 - A planned task is completed (remove it, add it to `completed`)
@@ -238,18 +253,21 @@ The hook handles staleness (entries older than 7 days) automatically at session 
 
 When you see the `[MEMENTO]` header injected into your context after compaction, orient immediately:
 
-1. Check `state` — if `"blocked"` or `"waiting"`, read `state_reason` and investigate that first
-2. Check `in_progress` — if set, verify its current state before doing anything else (re-run the test, check if the file changed, ping the endpoint)
-3. Read `mission` — confirm it matches what the user is asking about
-4. Read `completed` — understand what has been done and what it produced
-5. Read `upcoming` — these are the planned next tasks
+1. Check `mission_closed` — if set, the previous mission is finished. Do not execute its `upcoming` tasks. Wait for the user's next request and start a fresh mission.
+2. Check `state` — if `"blocked"` or `"waiting"`, read `state_reason` and investigate that first
+3. Check `in_progress` — if set, verify its current state before doing anything else (re-run the test, check if the file changed, ping the endpoint)
+4. Read `mission` — confirm it matches what the user is asking about
+5. Read `completed` — understand what has been done and what it produced
+6. Read `upcoming` — these are the planned next tasks
 
-**Verify before acting** on the first upcoming task:
+**Verify before acting** on `in_progress` and the first upcoming task:
 - Task mentions a file → read it; confirm changes aren't already applied
 - Task mentions a deploy → check the live endpoint or deployment logs
 - Task mentions a fix → run the relevant test to confirm it still fails
 - Task mentions a build → check if build output exists and is recent
 - If you cannot determine a verification method, state what you'd check and proceed
+
+**If `in_progress` work is already complete**: move it to `completed` with the result you can observe, set `in_progress` to null, and proceed to the next upcoming task. Do not re-execute completed work.
 
 Do not ask the user "should I continue?" — just verify and go.
 

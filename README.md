@@ -69,7 +69,7 @@ Nothing appears in your conversation. The journal is a background process.
 After compaction fires, Claude sees this injected silently into its system context:
 
 ```
-[MEMENTO] Mission: ship auth fix + pricing analysis | proj:myapp | path:~/.claude/.memento/alice.json
+[MEMENTO] Mission: ship auth fix + pricing analysis | proj:myapp | path:/home/alice/.claude/.memento/alice.json
 Sum: schema migration done, staging env configured
 Done: fix auth middleware -> PASETO impl, expiry corrected | ctx: user said "auth is broken before deploy"
 Done: analyze pricing -> 3 gaps, margins off 12% | ctx: pricing_check.py showed negative margin on SKU-47

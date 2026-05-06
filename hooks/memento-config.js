@@ -670,7 +670,7 @@ function formatJournalForInjection(journal, mode, journalPath) {
   lines.push('');
   lines.push(
     'Update journal after each task: write JSON to the path above using the Write tool. ' +
-    'Set in_progress before multi-step tasks; clear it (null) when done. ' +
+    'Write upcoming[] before starting a sequence; set in_progress before any task that spans multiple tool calls or launches an async agent. ' +
     'Entries must reflect only what was stated by the user or observed in tool output — never infer or fabricate.'
   );
 

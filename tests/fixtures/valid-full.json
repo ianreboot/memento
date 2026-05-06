@@ -15,13 +15,13 @@
     {
       "task": "fix auth middleware",
       "result": "PASETO impl, expiry corrected",
-      "ctx": "user said auth is broken before deploy",
+      "ctx": "user: auth is broken before deploy",
       "ts": "2026-01-01T10:00:00.000Z"
     },
     {
       "task": "analyze pricing",
       "result": "3 gaps found, margins off 12%",
-      "ctx": "pricing_check.py showed negative margin on SKU-47",
+      "ctx": "tool: pricing_check.py showed negative margin on SKU-47",
       "ts": "2026-01-01T11:00:00.000Z"
     }
   ],

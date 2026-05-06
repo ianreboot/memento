@@ -1,0 +1,34 @@
+{
+  "name": "memento",
+  "version": "0.1.0",
+  "description": "Persistent task memory across context compaction. Maintains a rolling journal of completed tasks, their results, and causal context — injected automatically at session start so Claude can recover mid-task without human intervention.",
+  "author": {
+    "name": "ianreboot",
+    "url": "https://github.com/ianreboot"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/memento-activate.js\"",
+            "timeout": 5000,
+            "statusMessage": "Restoring task context..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/memento-tracker.js\"",
+            "timeout": 3000
+          }
+        ]
+      }
+    ]
+  }
+}

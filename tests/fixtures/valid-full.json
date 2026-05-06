@@ -1,0 +1,29 @@
+{
+  "mission": "build feature X end to end",
+  "mission_opened": "2026-01-01T00:00:00.000Z",
+  "mission_closed": null,
+  "project": "myapp",
+  "summary": "Fixed auth. Analyzed pricing.",
+  "state": "blocked",
+  "state_reason": "waiting on API key from devops",
+  "in_progress": {
+    "task": "write unit tests for auth module",
+    "started": "2026-01-01T12:00:00.000Z",
+    "progress": "2/5 test cases done"
+  },
+  "completed": [
+    {
+      "task": "fix auth middleware",
+      "result": "PASETO impl, expiry corrected",
+      "ctx": "user said auth is broken before deploy",
+      "ts": "2026-01-01T10:00:00.000Z"
+    },
+    {
+      "task": "analyze pricing",
+      "result": "3 gaps found, margins off 12%",
+      "ctx": "pricing_check.py showed negative margin on SKU-47",
+      "ts": "2026-01-01T11:00:00.000Z"
+    }
+  ],
+  "upcoming": ["deploy auth fix", "pricing decision meeting"]
+}

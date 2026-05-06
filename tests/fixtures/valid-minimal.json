@@ -1,0 +1,12 @@
+{
+  "mission": "test mission",
+  "mission_opened": "2026-01-01T00:00:00.000Z",
+  "mission_closed": null,
+  "project": "testproj",
+  "summary": null,
+  "state": "active",
+  "state_reason": null,
+  "in_progress": null,
+  "completed": [],
+  "upcoming": []
+}

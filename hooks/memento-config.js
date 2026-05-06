@@ -678,6 +678,32 @@ function formatJournalForInjection(journal, mode, journalPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Debug journal cleanup
+// ---------------------------------------------------------------------------
+
+// Delete the debug journal file for the given journal path, if it exists.
+// Called by memento-activate.js at session start when MEMENTO_DEBUG is not set.
+// This ensures the debug file is removed on the first session start after debug
+// mode is turned off, rather than accumulating stale data indefinitely.
+// Silent-fails on any filesystem error.
+function cleanupDebugJournal(journalPath) {
+  try {
+    const debugPath = journalPath.replace(/\.json$/, '.debug.json');
+    let st;
+    try {
+      st = fs.lstatSync(debugPath);
+    } catch (e) {
+      return; // File doesn't exist — nothing to clean up
+    }
+    if (st.isFile() && !st.isSymbolicLink()) {
+      fs.unlinkSync(debugPath);
+    }
+  } catch (e) {
+    // Silent fail — cleanup is best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fresh journal template
 // ---------------------------------------------------------------------------
 
@@ -713,6 +739,7 @@ module.exports = {
   pruneJournal,
   formatJournalForInjection,
   newJournal,
+  cleanupDebugJournal,
   DEBUG,
   MAX_COMPLETED,
   MAX_UPCOMING,

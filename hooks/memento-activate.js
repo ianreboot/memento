@@ -31,6 +31,7 @@ const {
   writeJournal,
   formatJournalForInjection,
   appendDebugEvents,
+  cleanupDebugJournal,
   DEBUG,
 } = require('./memento-config');
 
@@ -63,6 +64,12 @@ function run(rawInput) {
   const projectTag   = getProjectTag();           // current project (for journal.project field)
   const journalPath  = getJournalPath(claudeDir, instanceTag);
   const now         = new Date().toISOString();
+
+  // If debug mode is off, clean up any stale debug journal left over from
+  // a previous debug session. Runs silently on every session start.
+  if (!DEBUG) {
+    cleanupDebugJournal(journalPath);
+  }
 
   // Log session boundary regardless of whether journal exists
   if (DEBUG) {

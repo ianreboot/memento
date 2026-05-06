@@ -10,8 +10,8 @@
 //   source "startup" or unknown  → brief one-liner (save tokens on fresh sessions)
 //
 // The journal path is included in the header so Claude knows where to write
-// updates via the Write tool. Claude is the only writer — this hook is
-// read-only with respect to the journal file.
+// updates via the Write tool. Claude is the only writer for task entries —
+// this hook may write for housekeeping only (pruning, project tag updates).
 //
 // If the journal is missing, corrupt, or too large, this hook exits silently.
 // It never blocks session start.

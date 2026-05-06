@@ -44,8 +44,12 @@ Claude (during response)
 
 Memento supports two installation paths — both install the same hooks:
 
-**Plugin path** (recommended): `claude plugin install ianreboot/memento`
-- Hooks registered automatically via `.claude-plugin/plugin.json`
+**Plugin path** (recommended):
+```
+/plugin marketplace add ianreboot/memento
+/plugin install memento@ianreboot-memento
+```
+- Hooks registered automatically via `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json`
 - `${CLAUDE_PLUGIN_ROOT}` resolves to the plugin directory
 - No manual settings.json patching needed
 

@@ -40,7 +40,7 @@ The debug journal is a JSON file with these top-level fields:
 
 | Field | Type | What it contains |
 |-------|------|-----------------|
-| `project` | string | Instance tag (the filename stem, e.g. `alice`) |
+| `project` | string | Instance tag (the filename stem, e.g. `alice`) — note: this is a known cosmetic bug; it shows the instance tag rather than the project name |
 | `debug_since` | ISO timestamp | When debug mode was first active for this journal |
 | `write_seq` | number | Monotonic counter incremented on every debug write |
 | `sessions` | array | One entry per Claude Code session start |
@@ -129,7 +129,7 @@ All completed entries ever written, annotated with a `_debug` block:
 
 `type` values: `mission_opened`, `mission_closed`, `mission_changed`, `mission_reopened`.
 
-`trigger` values: `first_write` (Claude wrote the journal for the first time), `claude_write` (Claude set `mission_closed`), `hook_clear` (the UserPromptSubmit hook detected `/clear`).
+`trigger` values: `first_write` (Claude wrote the journal for the first time), `claude_write` (Claude set `mission_closed`), `hook_pattern_match` (the UserPromptSubmit hook detected `/clear` or a project-shift phrase).
 
 ### write_failures
 

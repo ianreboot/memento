@@ -59,14 +59,14 @@ Rolling summary of earlier work (pre-window):
 | Metric | Value |
 |--------|-------|
 | Sessions recorded | 15 |
-| Real compaction events | 1 (session 2, 14:14:44 UTC) |
+| Real compaction events | 2 (session 2 at 14:14:44 UTC; second on 2026-05-06) |
 | Write failures | 0 |
 | Collapse events | 0 |
 | Rolling window triggers | 0 |
 | Lifecycle events | 2 (both mission_closed: from `/clear` + Claude write) |
 | Upcoming items cleared on close | 4 |
 | Injection mode — brief (startup) | 5 invocations |
-| Injection mode — full (compact) | 10 invocations |
+| Injection mode — full (compact + resume) | 10 invocations (2 compact, 8 resume) |
 
 ---
 

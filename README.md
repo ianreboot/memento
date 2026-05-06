@@ -85,8 +85,9 @@ Claude reads this before the first post-compaction message arrives and resumes w
 ## Install
 
 **Option 1 — Plugin (recommended):**
-```bash
-claude plugin install ianreboot/memento
+```
+/plugin marketplace add ianreboot/memento
+/plugin install memento@ianreboot-memento
 ```
 
 **Option 2 — Standalone (curl):**
@@ -95,9 +96,9 @@ curl -fsSL https://raw.githubusercontent.com/ianreboot/memento/main/install.sh |
 ```
 
 **Uninstall:**
-```bash
+```
 # Plugin install:
-claude plugin uninstall ianreboot/memento
+/plugin uninstall memento@ianreboot-memento
 
 # Standalone install:
 bash ~/.claude/hooks/install.sh --uninstall
@@ -175,7 +176,7 @@ The mission closes automatically when you run `/clear`, change projects, or expl
 
 **Who can read it:** Only your local user account. Files are created with `0600` permissions (owner read/write only). Writes are atomic (temp file + rename) and symlink-safe — memento defends against symlink-clobber attacks at both the file and parent-directory level.
 
-**How long it persists:** Entries older than 7 days are collapsed into a one-line summary. The journal resets to a summary when you run `/clear`.
+**How long it persists:** When the newest completed entry is older than 7 days, all entries are collapsed into a one-line summary. The journal resets to a summary when you run `/clear`.
 
 **To see what is in your journal:**
 ```

@@ -12,5 +12,5 @@ Initial public release.
 - `MEMENTO_DEBUG=1` shadow journal for post-session forensics
 - Atomic writes, symlink-safe I/O, 0600 permissions, 6KB size cap
 - Test suite: 45 tests across journal utilities, hook integration, and symlink safety
-- Plugin install: `claude plugin install ianreboot/memento`
+- Plugin install: `/plugin marketplace add ianreboot/memento` then `/plugin install memento@ianreboot-memento`
 - Standalone install: `curl -fsSL .../install.sh | bash`

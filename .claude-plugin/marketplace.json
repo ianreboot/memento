@@ -1,0 +1,22 @@
+{
+  "name": "ianreboot-memento",
+  "description": "Plugins by ianreboot — persistent task memory across context compaction for Claude Code.",
+  "owner": {
+    "name": "ianreboot",
+    "url": "https://github.com/ianreboot"
+  },
+  "plugins": [
+    {
+      "name": "memento",
+      "description": "Maintains a rolling journal of completed tasks, their results, and causal context so Claude can recover mid-task after context compaction without human intervention. Always active. Invisible to user.",
+      "version": "0.1.0",
+      "author": {
+        "name": "ianreboot",
+        "url": "https://github.com/ianreboot/memento"
+      },
+      "category": "productivity",
+      "homepage": "https://github.com/ianreboot/memento",
+      "source": "."
+    }
+  ]
+}

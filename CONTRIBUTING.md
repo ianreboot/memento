@@ -22,7 +22,7 @@ This is loaded into Claude's context whenever the skill triggers. It instructs C
 Two hooks run automatically on every Claude Code session:
 
 **`memento-activate.js`** (SessionStart):
-- Reads the journal for the current project
+- Reads the journal for the current instance
 - Prunes stale entries if needed
 - Formats the journal as plain text
 - Writes to stdout — Claude Code injects this as hidden system context
@@ -44,9 +44,10 @@ Two hooks run automatically on every Claude Code session:
 
 ### Hook definition file
 
-One file defines the hooks for the plugin install path:
+Two files define the plugin install path:
 
-- **`.claude-plugin/plugin.json`** — used by `claude plugin install` (nested `hooks: { EventName: [...] }` object)
+- **`.claude-plugin/plugin.json`** — plugin manifest (hooks, metadata)
+- **`.claude-plugin/marketplace.json`** — marketplace catalog (required for `/plugin marketplace add ianreboot/memento`)
 
 The standalone installer (`hooks/install.sh`) does not use this file — it patches `~/.claude/settings.json` directly with inline Node.js.
 
@@ -54,7 +55,7 @@ The standalone installer (`hooks/install.sh`) does not use this file — it patc
 
 Stored at `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.json`. One file per Claude instance (one per OS user by default). Claude Code's config directory defaults to `~/.claude` but respects the `CLAUDE_CONFIG_DIR` environment variable.
 
-The file is written by Claude (via the Write tool) and read by hooks. Both reads and writes are symlink-safe and use atomic operations.
+The file is written by Claude (via the Write tool) and read by hooks. Hook reads and writes are symlink-safe and use atomic operations. Claude's Write tool writes (the task entries) are not atomic — see Known Issues #2.
 
 ## Journal Schema
 

@@ -39,7 +39,7 @@ const { execFileSync } = require('child_process');
 // ---------------------------------------------------------------------------
 
 // Maximum journal file size. A fully-populated journal at max field lengths:
-//   mission:200 + summary:200 + 8×(task:80+result:120+ctx:120+ts:24) + 5×upcoming:100
+//   mission:200 + summary:300 + 8×(task:80+result:120+ctx:120+ts:24) + 5×upcoming:100
 //   ≈ 4300 bytes + JSON formatting overhead. 6KB provides safe headroom.
 // Files exceeding this are treated as corrupt and replaced with a fresh journal.
 const MAX_JOURNAL_BYTES = parseInt(process.env.MEMENTO_MAX_FILE_KB || '', 10) * 1024 || 6 * 1024;

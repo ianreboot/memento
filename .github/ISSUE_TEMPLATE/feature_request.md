@@ -1,19 +1,18 @@
 ---
 name: Feature request
 about: Suggest an improvement or new capability
-title: ''
 labels: enhancement
-assignees: ''
 ---
 
 **What problem does this solve?**
-<!-- Describe the limitation or gap you're running into. -->
+<!-- Describe the gap or friction you're hitting -->
 
 **Proposed solution**
-<!-- Describe the feature you'd like. Be as specific as possible. -->
+<!-- What would you like to see? -->
 
 **Alternatives considered**
-<!-- Other approaches you thought about, and why you rejected them. -->
+<!-- Any other approaches you thought about? -->
 
-**Willing to contribute a PR?**
-[ ] Yes [ ] No [ ] Maybe, with guidance
+**Willing to contribute?**
+[ ] Yes, I can open a PR
+[ ] No, just flagging the idea

@@ -1,15 +1,13 @@
 ---
 name: Bug report
-about: Something is not working as expected
-title: ''
+about: Something isn't working as expected
 labels: bug
-assignees: ''
 ---
 
 **What happened?**
-<!-- Describe the bug clearly. -->
+<!-- Describe what went wrong -->
 
-**Expected behavior**
+**What did you expect?**
 <!-- What should have happened instead? -->
 
 **Steps to reproduce**
@@ -18,16 +16,19 @@ assignees: ''
 3.
 
 **Journal contents**
-<!-- Paste your journal file (redact any sensitive info): -->
-```
-cat ~/.claude/.memento/*.json
+<!-- Run: cat ~/.claude/.memento/*.json -->
+```json
+
 ```
 
 **Environment**
-- Claude Code version:
-- Node.js version (`node --version`):
+- Install method: [ ] Plugin (`claude plugin install`) [ ] Standalone (`curl | bash`)
+- Claude Code version: <!-- run: claude --version -->
+- Node.js version: <!-- run: node --version -->
 - OS:
-- Install method: [ ] `claude plugin install` [ ] standalone `install.sh`
 
-**Additional context**
-<!-- Debug log (if MEMENTO_DEBUG=1): cat ~/.claude/.memento/*.debug.json -->
+**Debug log** (if `MEMENTO_DEBUG=1` was set)
+<!-- Run: cat ~/.claude/.memento/*.debug.json -->
+```json
+
+```

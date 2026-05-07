@@ -27,7 +27,7 @@
 
 ---
 
-Claude Code forgets everything when context compaction fires. Memento keeps a lightweight task journal on disk and re-injects it automatically, so Claude picks up exactly where it left off — no questions asked. Install takes 10 seconds, costs under 400 tokens per injection, and runs invisibly in the background.
+Claude Code forgets everything when context compaction fires. Memento keeps a lightweight task journal on disk and re-injects it automatically, so Claude picks up exactly where it left off — no questions asked. Install takes 10 seconds, costs under 2,000 tokens total (journal injection ~400 tokens, SKILL.md behavioral spec ~1,500 tokens loaded once per session), and runs invisibly in the background.
 
 ## The Problem
 
@@ -63,7 +63,7 @@ Compaction happens
 
 **Push-based recovery.** The hook injects the journal automatically on every session start — including after compaction. Claude does not need to know to ask for context; it arrives before the first message. This is the key difference from pull-based memory tools that require the AI to query a memory store — which a just-compacted Claude cannot reliably do on its own.
 
-Nothing appears in your conversation. The journal is a background process.
+Nothing appears in your conversation. The journal is a background process. Journal writes appear as Write tool calls in your tool stream — this is visible confirmation that memento is saving your work, not conversation content. Hook output (the context injection itself) is never visible.
 
 ## What Recovery Looks Like
 
@@ -81,6 +81,14 @@ Update journal after each task: write JSON to the path above using the Write too
 ```
 
 Claude reads this before the first post-compaction message arrives and resumes without asking you to re-explain anything.
+
+## How Reliable Is It?
+
+Memento's hooks — context injection, pruning, mission lifecycle — are fully automatic and reliable. Journal writes depend on Claude executing the Write tool after each task. In focused sessions this works well. In very complex or high-pressure work, Claude may occasionally miss a write.
+
+To see what memento has saved at any point: `"what does memento have on this session?"` Claude reads and displays the journal directly.
+
+For maximum coverage during a critical session, you can prompt a catch-up write at any time: `"update the memento journal before we continue."` This is the manual fallback when you want a guaranteed checkpoint.
 
 ## Install
 
@@ -120,6 +128,11 @@ Each journal entry captures three things:
 
 **The fidelity rule**: `ctx` only contains what you explicitly stated or what tool output directly showed. If the reason was not stated, `ctx` is omitted. Memento never infers or fabricates causal chains.
 
+**ctx typed prefixes** tell a recovering Claude how to trust the context:
+- `user: <exact words>` — what you said (authoritative; drives recovery behavior)
+- `tool: <output snippet>` — what a tool showed (may be stale; verify before acting on it)
+- `note: <recovery hint>` — critical context written by Claude for the next session
+
 ### What counts as a task
 
 A task is a discrete action that changes project state or produces something you can act on:
@@ -132,7 +145,7 @@ A task is a discrete action that changes project state or produces something you
 
 ### In-progress tracking
 
-If compaction fires mid-task — inside a deploy, mid-debug cycle, partway through a multi-file refactor — memento preserves the `in_progress` field so the recovered Claude knows exactly what was interrupted and where it left off.
+The most dangerous compaction scenario is mid-task: a half-deployed service, a partially refactored codebase, an interrupted multi-file edit. Memento's `in_progress` field is specifically designed for this: it preserves exactly what was interrupted and where, so the recovered Claude can verify and resume rather than starting over or guessing.
 
 ### Mission state
 
@@ -140,7 +153,7 @@ The journal tracks whether the current mission is `active`, `blocked`, or `waiti
 
 ### Rolling window
 
-The journal keeps the 8 most recent completed tasks plus up to 5 upcoming tasks. Older entries are folded into a one-line rolling summary. The journal file stays under 6KB and each injection costs under 400 tokens — negligible against a 200k context window. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
+The journal keeps the 12 most recent completed tasks (configurable via `MEMENTO_MAX_ENTRIES`) plus up to 5 upcoming tasks. Older entries are folded into a one-line rolling summary. The journal file stays under 6KB and each journal injection costs under 400 tokens — negligible against a 200k context window. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
 
 ### Entry format
 
@@ -161,6 +174,11 @@ Memento fills the gap between three existing layers:
 | `CLAUDE.md` | Permanent project knowledge | Does not touch |
 | `MEMORY.md` | Cross-session temporal notes | Does not touch |
 | Conversation history | Full dialogue | Survives compaction where this does not |
+
+**When to use each layer:**
+- **Memento**: task-level recovery within focused work sessions — what happened in the last 12 tasks and why. Automatic.
+- **MEMORY.md**: system state, active process ownership, multi-week project checkpoints, anything with a natural expiry. Requires manual upkeep.
+- **CLAUDE.md**: permanent architecture decisions, API facts, code patterns — anything that should be true across every future session regardless of mission. Requires manual upkeep.
 
 ## Mission Tracking
 
@@ -199,12 +217,15 @@ All settings are optional. Memento works out of the box with no configuration.
 
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
-| `MEMENTO_INSTANCE_TAG` | OS username | Override journal filename — use when running two Claude windows under the same OS user |
+| `MEMENTO_INSTANCE_TAG` | OS username | Override journal filename — use when two Claude windows share an OS user, or multiple users share a machine account |
+| `MEMENTO_MAX_ENTRIES` | `12` | Maximum completed entries to keep (range 4–24). Higher values improve recovery for long sessions at negligible token cost. |
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
-| `MEMENTO_STALE_DAYS` | `7` | Days before entries are collapsed into a summary |
+| `MEMENTO_STALE_DAYS` | `7` | Days before a closed mission's entries collapse into a summary. Active missions use 2× this threshold. |
 | `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>.debug.json` — records every write, prune, injection, and mission lifecycle event for post-session forensics |
 
 Note: `MEMENTO_PROJECT_TAG` does not exist. The project field in the journal is auto-detected from the git repo name and needs no override.
+
+**Shared accounts**: If multiple users or Claude windows share the same OS user account, set a unique `MEMENTO_INSTANCE_TAG` per instance to prevent journal collisions (e.g. `MEMENTO_INSTANCE_TAG=alice` and `MEMENTO_INSTANCE_TAG=bob`).
 
 ## Contributing
 

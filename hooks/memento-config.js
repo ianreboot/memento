@@ -45,9 +45,9 @@ const { execFileSync } = require('child_process');
 const MAX_JOURNAL_BYTES = parseInt(process.env.MEMENTO_MAX_FILE_KB || '', 10) * 1024 || 6 * 1024;
 
 // Rolling window: keep at most this many completed entries before summarizing.
-// At ~25 tokens/entry in injection format, 8 entries ≈ 200 tokens — negligible
-// against a 200k context window.
-const MAX_COMPLETED = 8;
+// At ~25 tokens/entry in injection format, 12 entries ≈ 300 tokens — negligible
+// against a 200k context window. Configurable via MEMENTO_MAX_ENTRIES (range 4–24).
+const MAX_COMPLETED = Math.max(4, Math.min(24, parseInt(process.env.MEMENTO_MAX_ENTRIES || '', 10) || 12));
 
 // Maximum upcoming tasks to track. Claude rarely plans more than 5 concrete steps.
 const MAX_UPCOMING = 5;
@@ -479,7 +479,10 @@ function pruneJournal(journal, opts) {
     const newestTs = timestamps.length > 0 ? new Date(Math.max(...timestamps)) : null;
     if (newestTs && !isNaN(newestTs)) {
       const ageDays = (Date.now() - newestTs.getTime()) / (1000 * 60 * 60 * 24);
-      if (ageDays > STALE_DAYS) {
+      // Two-tier staleness: closed missions collapse at STALE_DAYS; active missions
+      // get 2× the threshold so journals survive extended breaks without losing task detail.
+      const staleThreshold = j.mission_closed ? STALE_DAYS : STALE_DAYS * 2;
+      if (ageDays > staleThreshold) {
         // Capture debug events before mutating j
         if (dbg) {
           const upcomingCleared = Array.isArray(j.upcoming) ? j.upcoming.filter(Boolean).length : 0;
@@ -493,6 +496,8 @@ function pruneJournal(journal, opts) {
               entries_collapsed:     completed.length,
               upcoming_cleared:      upcomingCleared,
               newest_entry_age_days: Math.round(ageDays * 10) / 10,
+              stale_threshold_days:  staleThreshold,
+              mission_was_closed:    !!j.mission_closed,
               summary_before:        j.summary,
               summary_after:         summaryAfter,
             },
@@ -614,8 +619,16 @@ function merge(existing, newLine) {
 //
 // The journal path is included in the header so Claude knows where to write
 // updates via the Write tool — this is the ONLY way Claude knows the path.
-function formatJournalForInjection(journal, mode, journalPath) {
+function formatJournalForInjection(journal, mode, journalPath, projectTag) {
   if (!journal) return '';
+
+  // Cross-project suppression: if the journal belongs to a different, closed project,
+  // the detailed completed entries are irrelevant noise. Keep only the closed signal
+  // and a one-line summary so the recovering Claude knows the previous context briefly.
+  const crossProject = !!(projectTag && projectTag !== 'default'
+    && journal.project && journal.project !== 'default'
+    && journal.project !== projectTag
+    && journal.mission_closed);
 
   // Defensive limits — cap what gets injected regardless of what's on disk
   const mission = (journal.mission || '[no mission set]').slice(0, FIELD_LIMITS.mission);
@@ -639,39 +652,48 @@ function formatJournalForInjection(journal, mode, journalPath) {
   const lines = [];
   lines.push(`[MEMENTO] Mission: ${mission}${closedMark}${stateMark} | proj:${project}${pathHint}`);
 
-  if (journal.summary) {
-    lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
-  }
+  if (crossProject) {
+    // Suppress detailed entries from a different, closed project — they are irrelevant noise.
+    // Preserve only the mission-closed signal (already in the header) and a one-line summary.
+    const xpSummary = journal.summary
+      || (Array.isArray(journal.completed) && journal.completed.length > 0 ? journal.completed[0].task : null);
+    if (xpSummary) lines.push(`Previous work (${journal.project}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
+  } else {
+    if (journal.summary) {
+      lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
+    }
 
-  const completed = (Array.isArray(journal.completed) ? journal.completed : []).slice(0, MAX_COMPLETED).filter(Boolean);
-  for (const entry of completed) {
-    const task   = (typeof entry.task   === 'string' ? entry.task   : '').slice(0, FIELD_LIMITS.task);
-    const result = (typeof entry.result === 'string' ? entry.result : '').slice(0, FIELD_LIMITS.result);
-    const ctx    = (typeof entry.ctx    === 'string' ? entry.ctx    : '').slice(0, FIELD_LIMITS.ctx);
-    let line = `Done: ${task}`;
-    if (result) line += ` -> ${result}`;
-    if (ctx)    line += ` | ctx: ${ctx}`;
-    lines.push(line);
-  }
+    const completed = (Array.isArray(journal.completed) ? journal.completed : []).slice(0, MAX_COMPLETED).filter(Boolean);
+    for (const entry of completed) {
+      const task   = (typeof entry.task   === 'string' ? entry.task   : '').slice(0, FIELD_LIMITS.task);
+      const result = (typeof entry.result === 'string' ? entry.result : '').slice(0, FIELD_LIMITS.result);
+      const ctx    = (typeof entry.ctx    === 'string' ? entry.ctx    : '').slice(0, FIELD_LIMITS.ctx);
+      let line = `Done: ${task}`;
+      if (result) line += ` -> ${result}`;
+      if (ctx)    line += ` | ctx: ${ctx}`;
+      lines.push(line);
+    }
 
-  // D1: show in-progress task between Done entries and Next entries
-  if (journal.in_progress && journal.in_progress.task) {
-    const wip = journal.in_progress;
-    let wipLine = `WIP: ${String(wip.task).slice(0, 80)}`;
-    if (wip.progress) wipLine += ` | ${String(wip.progress).slice(0, 120)}`;
-    lines.push(wipLine);
-  }
+    // D1: show in-progress task between Done entries and Next entries
+    if (journal.in_progress && journal.in_progress.task) {
+      const wip = journal.in_progress;
+      let wipLine = `WIP: ${String(wip.task).slice(0, 80)}`;
+      if (wip.progress) wipLine += ` | ${String(wip.progress).slice(0, 120)}`;
+      lines.push(wipLine);
+    }
 
-  const upcoming = (Array.isArray(journal.upcoming) ? journal.upcoming : []).slice(0, MAX_UPCOMING).filter(Boolean);
-  if (upcoming.length > 0) {
-    lines.push(`Next: ${upcoming.map(t => String(t).slice(0, 150)).join(' | ')}`);
+    const upcoming = (Array.isArray(journal.upcoming) ? journal.upcoming : []).slice(0, MAX_UPCOMING).filter(Boolean);
+    if (upcoming.length > 0) {
+      lines.push(`Next: ${upcoming.map(t => String(t).slice(0, 150)).join(' | ')}`);
+    }
   }
 
   lines.push('');
   lines.push(
     'Update journal after each task: write JSON to the path above using the Write tool. ' +
     'Write upcoming[] before starting a sequence; set in_progress before any task that spans multiple tool calls or launches an async agent. ' +
-    'Entries must reflect only what was stated by the user or observed in tool output — never infer or fabricate.'
+    'Entries must reflect only what was stated by the user or observed in tool output — never infer or fabricate. ' +
+    'Verify in_progress tasks before acting; write the journal after your next completed task.'
   );
 
   return lines.join('\n');

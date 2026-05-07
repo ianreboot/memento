@@ -3,14 +3,22 @@ name: memento
 description: >
   Persistent task memory across context compaction. Maintains a rolling journal of
   completed tasks, their results, and causal context so Claude can recover mid-task
-  after compaction without human intervention. Always active. Invisible to user.
-  Triggers automatically — no slash command needed.
+  after compaction without human intervention. Hook injection is automatic and invisible.
+  Journal writes require Claude to use the Write tool after each task — no slash command needed.
 ---
 
 # Memento
 
 Maintain a lightweight, mission-scoped task journal that survives context compaction.
 The journal is a small JSON file on disk. Claude writes it. Hooks read and inject it.
+
+## CRITICAL: Write After Every Task
+
+After completing ANY task that passes the "did you do X yet?" test, immediately write the journal using the Write tool — before starting the next action. Do not batch writes. Do not delay until the end of the response. If compaction fires between tasks, any unwritten work is permanently lost.
+
+For multi-tool-call sequences: write the journal with `upcoming[]` populated **before** starting the sequence. Update `in_progress` before the first tool call if the task spans multiple steps.
+
+If in doubt whether a request is substantive enough to journal: write it anyway with `mission:"[pending]"` if the mission isn't clear yet. An imperfect journal beats no journal.
 
 ## Architecture
 
@@ -57,6 +65,8 @@ The `project` field tracks what's being worked on right now — not the journal 
 ```
 
 When switching projects, also open a new mission (new `mission_opened`, clear `mission_closed`, reset `completed`/`upcoming`). Keep `summary` as historical context if relevant.
+
+If the header shows `proj:default`, update the `project` field to the name of the first directory or repository you work in. `default` provides no recovery orientation.
 
 ## Journal Schema
 
@@ -180,10 +190,12 @@ Good: `"decide pricing model for Q3 launch"`
 Bad: `"help user with auth"` (vague, no deliverable)
 Bad: `"check some things"` (not yet substantive — set to `[pending]` and update when clear)
 
+If the user states execution constraints ("don't change the token format", "external docs = clean briefs only"), append them to the mission separated by ` -- `: `"fix auth pipeline -- user: don't change token format"`. This gives a recovering Claude behavioral context, not just task direction.
+
 **Mission lifecycle:**
 - Open: set `mission_opened` to current timestamp, `mission_closed` to null
 - Close: the UserPromptSubmit hook sets `mission_closed` when it detects `/clear` or explicit project-shift commands. You do not need to handle these.
-- **Claude-driven closure:** If you complete the last upcoming task and the user confirms satisfaction ("that's done", "ship it", "looks good"), set `mission_closed` to the current timestamp, `upcoming` to `[]`, and `state_reason` to `"mission complete"`. Do not wait for the hook — a closed mission is a clear signal to the next session that this work is finished.
+- **Claude-driven closure:** If you complete the last upcoming task and the user confirms satisfaction ("that's done", "ship it", "looks good"), set `mission_closed` to the current timestamp, `state` to `"waiting"`, `state_reason` to `"mission complete"`, and `upcoming` to `[]`. Do not wait for the hook — a closed mission is a clear signal to the next session that this work is finished.
 - New mission: when `mission_closed` is set and the user starts working on something new, write a new journal with `mission_opened` reset and `mission_closed` null. Preserve old `summary` as historical context if relevant.
 
 **`[pending]` at recovery**: If you recover and `mission` is `[pending]`, treat the journal as if no mission exists. Set the mission from the user's next substantive request. Do not carry `[pending]` across sessions — it provides no recovery value.
@@ -242,12 +254,12 @@ Do not speculate about future tasks beyond what the user has indicated.
 
 ## Rolling Window and Pruning
 
-The journal keeps at most 8 completed entries. When entry 9 would be added:
+The journal keeps at most 12 completed entries (configurable via `MEMENTO_MAX_ENTRIES`, range 4–24). When the limit is exceeded:
 1. Remove the oldest entry from `completed`
 2. Append its essence to `summary`: `summary += ". " + task + " -> " + result`
 3. Trim `summary` from the start if it exceeds 300 characters (recent context is more valuable)
 
-The hook handles staleness (entries older than 7 days) automatically at session start.
+The hook handles staleness automatically at session start using a two-tier model: closed missions collapse after 7 days; active missions after 14 days. The extended threshold for active missions protects journals from users who take extended breaks without explicitly closing their mission first.
 
 ## Recovery After Compaction
 
@@ -269,6 +281,10 @@ When you see the `[MEMENTO]` header injected into your context after compaction,
 
 **If `in_progress` work is already complete**: move it to `completed` with the result you can observe, set `in_progress` to null, and proceed to the next upcoming task. Do not re-execute completed work.
 
+**Journal the verification**: When you verify `in_progress` tasks after recovery, write the result as a completed entry — `{ "task": "verify: <task>", "result": "<what you found>", "ctx": "note: verified after compaction recovery", "ts": "<now>" }`. This creates a paper trail for the next compaction and reinforces the journaling habit at the moment it's most fragile.
+
+**If WORK_STATE.md or a detailed compaction summary is also present**: treat it as authoritative for task specifics. The memento journal provides mission framing and task history; WORK_STATE provides granular recovery detail. Use both. Write journal updates to the path shown in the `[MEMENTO]` header.
+
 Do not ask the user "should I continue?" — just verify and go.
 
 The journal is a recovery aid, not an authority. Always verify before action.
@@ -278,11 +294,23 @@ If the injected journal describes a different project than what the user is now 
 ## Creating a New Journal
 
 When you see `[MEMENTO] No prior journal | instance:X | proj:Y | path:/some/path`:
-1. Wait for the first substantive user request
-2. Write the journal file to **the exact path shown in the header** — never derive the path yourself
-3. Use the full schema: `state: "active"`, `in_progress: null`, `completed: []`, `upcoming: []`
-4. Set `mission` from the first substantive user request
-5. Set `project` to the value shown after `proj:` in the header
+1. Write the journal file to **the exact path shown in the header** — never derive the path yourself
+2. Set `mission` from the user's first substantive request; use `"[pending]"` if unclear and update when clear
+3. Set `project` to the value shown after `proj:` in the header
+
+**Minimal write template** (the hook fills defaults for omitted fields):
+```json
+{
+  "mission": "<from user's request, or '[pending]'>",
+  "mission_opened": "<ISO timestamp>",
+  "mission_closed": null,
+  "project": "<proj: value from header>",
+  "completed": [],
+  "upcoming": []
+}
+```
+
+**Post-compaction recovery with no prior journal**: If you see `[MEMENTO] No prior journal` alongside a compaction summary or WORK_STATE context, create the journal **immediately** — infer the mission from the available context before executing any task. Do not wait for a new user request; the session is already in motion.
 
 **Creating the journal is mandatory on first substantive task.** If you skip it, the next session after compaction will have no recovery context.
 

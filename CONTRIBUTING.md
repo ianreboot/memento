@@ -61,27 +61,27 @@ The file is written by Claude (via the Write tool) and read by hooks. Hook reads
 
 ```json
 {
-  "mission":        "string",
+  "mission":        "string (max 400 chars — verbatim request + constraints + done-when)",
   "mission_opened": "ISO 8601",
   "mission_closed": "ISO 8601 or null",
   "project":        "string",
-  "summary":        "string or null (max 300 chars)",
-  "state":          "\"active\" | \"blocked\" | \"waiting\"",
-  "state_reason":   "string or null (max 120 chars)",
-  "in_progress":    "{ task, started, progress } or null",
-  "completed": [
+  "summary":        "string or null (max 300 chars — rolling summary of pruned entries)",
+  "wip":            "string or null (max 150 chars — mid-task state or blocker)",
+  "done": [
     {
-      "task":   "string (max 80 chars)",
+      "act":    "string (max 80 chars)",
       "result": "string (max 120 chars)",
-      "ctx":    "string (max 120 chars)",
+      "ctx":    "string (max 120 chars) — typed: user:... | tool:... | note:...",
       "ts":     "ISO 8601"
     }
   ],
-  "upcoming": ["string"]
+  "plan": ["string (max 150 chars each — action + concrete anchor)"]
 }
 ```
 
-Rolling window: max 8 completed entries. When entry 9 is added, the oldest is folded into `summary`. Max 5 upcoming entries. File must stay under 6KB.
+Rolling window: max 6 `done` entries (configurable via `MEMENTO_MAX_ENTRIES`, range 4–24). When the limit is exceeded, the oldest entry is folded into `summary`. Max 3 `plan` items. File must stay under 6KB.
+
+**Backward compatibility**: journals written by v0.1.x use `completed`/`upcoming`/`task`/`in_progress`/`state`/`state_reason`. These are read transparently by `readJournal()` and normalized to new names on the next write. No migration needed.
 
 ## Setting Up for Development
 
@@ -115,7 +115,7 @@ Since memento is a Claude Code plugin, full end-to-end testing requires Claude C
 2. **Journal utilities**: Write a small test script that calls functions from `memento-config.js` directly.
 3. **Integration**: Install hooks, open Claude Code, complete some tasks, trigger compaction manually (by filling context), and verify recovery.
 
-Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (45 tests total).
+Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (51 tests total).
 
 ## Contribution Guidelines
 

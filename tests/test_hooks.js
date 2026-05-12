@@ -191,6 +191,20 @@ test('active mission: emits hookSpecificOutput reminder', () => {
   }
 });
 
+test('active mission with empty done[]: reminder includes unprotected warning', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { done: [], completed: [], wip: null, in_progress: null });
+    const r = runHook('memento-tracker.js', '{"prompt":"start the analysis"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('no entries yet'), 'empty-done reminder must include "no entries yet"');
+    assert.ok(ctx.includes('unprotected'), 'empty-done reminder must include "unprotected"');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
 test('closed mission: emits prior-mission-closed reminder', () => {
   const dir = tmpDir();
   try {

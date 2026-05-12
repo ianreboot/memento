@@ -154,7 +154,7 @@ function run(rawInput) {
         detail = '';
       }
 
-      const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal after task completion.`;
+      const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal when information that compaction would destroy changes.`;
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',

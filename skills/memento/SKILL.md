@@ -193,7 +193,7 @@ A task is a discrete action that changes project state or produces something the
 
 When in doubt: if the user could meaningfully say "did you do X yet?", it is a task.
 
-**Discussion and research sessions** work the same as any other session — they have a mission, causal linkage, and done entries. A brand-naming research session: `mission = "find brand name for us-seo -- .com+.net free, non-generic, home-services adjacent, no IQ suffix -- done when: user picks name"`, done entries with `ctx: note:` for eliminated directions, `wip` for current candidate state. No special casing needed.
+**Discussion and research sessions** work the same as any other session — they have a mission, causal linkage, and done entries. A research session: `mission = "evaluate DB options for auth service -- must support row-level security, under $50/mo -- done when: user picks one"`, done entries with `ctx: note:` for eliminated options, `wip` for current evaluation state. No special casing needed.
 
 ## Entry Compression
 
@@ -246,7 +246,7 @@ The journal keeps at most 6 completed entries (configurable via `MEMENTO_MAX_ENT
 2. Append its essence (including ctx) to `summary`
 3. Trim `summary` from the start if it exceeds 300 characters (recent context is more valuable)
 
-The hook handles staleness automatically at session start using a two-tier model: closed missions collapse after 7 days; active missions after 14 days. The extended threshold for active missions protects journals from users who take extended breaks without explicitly closing their mission first.
+The hook handles staleness automatically at session start using a two-tier model: closed missions collapse after the staleness threshold (default 7 days); active missions after 2× that threshold (default 14 days). The extended threshold for active missions protects journals from users who take extended breaks without explicitly closing their mission first.
 
 ## Recovery After Compaction
 
@@ -267,7 +267,7 @@ When you see the `[MEMENTO]` header injected into your context after compaction,
 
 **If `wip` work is already complete**: move it to `done` with the result you can observe, set `wip` to null, and proceed to the next plan item. Do not re-execute completed work.
 
-**Journal the verification**: When you verify `wip` tasks after recovery, write the result as a done entry — `{ "act": "verify: <task>", "result": "<what you found>", "ctx": "note: verified after compaction recovery", "ts": "<now>" }`. This creates a paper trail for the next compaction.
+**Journal the verification**: When you verify `wip` tasks after recovery, write the result as a done entry — `{ "act": "verify: <task>", "result": "<what you found>", "ts": "<now>" }`. Include `ctx` only if the result changes what happens next (e.g., `"ctx": "note: deploy still pending — must run wrangler before PR"`). This creates a paper trail for the next compaction.
 
 **If WORK_STATE.md or a detailed compaction summary is also present**: treat it as authoritative for task specifics. The memento journal provides mission framing and task history; WORK_STATE provides granular recovery detail. Use both. Write journal updates to the path shown in the `[MEMENTO]` header.
 

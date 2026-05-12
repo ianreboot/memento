@@ -603,6 +603,8 @@ function entryToSummaryLine(entry) {
   const act = entry.act || entry.task || '';
   const parts = [act];
   if (entry.result) parts.push(`-> ${entry.result}`);
+  // Preserve ctx — carries forward-causation intent that act/result alone loses in summary
+  if (typeof entry.ctx === 'string') parts.push(`(${entry.ctx})`);
   return parts.join(' ');
 }
 
@@ -646,13 +648,13 @@ function merge(existing, newLine) {
 function formatJournalForInjection(journal, mode, journalPath, projectTag) {
   if (!journal) return '';
 
-  // Cross-project suppression: if the journal belongs to a different, closed project,
-  // the detailed completed entries are irrelevant noise. Keep only the closed signal
-  // and a one-line summary so the recovering Claude knows the previous context briefly.
+  // Cross-project suppression: if the journal belongs to a different project,
+  // the detailed entries are irrelevant noise regardless of mission status.
+  // Keep only the mission signal and a one-line summary so the recovering Claude
+  // knows the previous context briefly before pivoting to the current project.
   const crossProject = !!(projectTag && projectTag !== 'default'
     && journal.project && journal.project !== 'default'
-    && journal.project !== projectTag
-    && journal.mission_closed);
+    && journal.project !== projectTag);
 
   // Defensive limits — cap what gets injected regardless of what's on disk
   const mission = (journal.mission || '[no mission set]').slice(0, FIELD_LIMITS.mission);
@@ -671,7 +673,7 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     const doneFilt = done.filter(Boolean);
     const planFilt = plan.filter(Boolean);
     return `[MEMENTO] Mission: ${mission}${closedMark} | proj:${project}${pathHint}\n` +
-           `${doneFilt.length} task(s) done, ${planFilt.length} pending. Update journal via Write tool after task completion.`;
+           `${doneFilt.length} task(s) done, ${planFilt.length} pending. Update journal when information that compaction would destroy changes.`;
   }
 
   // Full injection (post-compaction recovery)

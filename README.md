@@ -27,7 +27,7 @@
 
 ---
 
-Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Install takes 10 seconds, costs under 2,000 tokens total (journal injection ~350 tokens, SKILL.md behavioral spec ~1,500 tokens loaded once per session), and runs invisibly in the background.
+Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Install takes 10 seconds, adds ~350 tokens to a recovered session (less for fresh starts), and runs invisibly in the background.
 
 ## The Problem
 

@@ -114,7 +114,7 @@ A clean agent with no prior context was given both journal files and asked 20 qu
 
 ## Test Suite
 
-For automated coverage, see `tests/run.sh` (47 tests):
+For automated coverage, see `tests/run.sh` (51 tests):
 
 ```bash
 bash tests/run.sh

@@ -17,7 +17,7 @@ const fs   = require('fs');
 const path = require('path');
 
 // Field limits for detectTruncations — must stay in sync with FIELD_LIMITS in memento-config.js
-const FIELD_LIMITS = { task: 80, result: 120, ctx: 120 };
+const FIELD_LIMITS = { act: 80, result: 120, ctx: 120 };
 
 // Maximum size for the debug file. Unlike the main journal it is never pruned,
 // so it grows across a session. We refuse to write past this limit.
@@ -120,7 +120,7 @@ function appendDebugEvents(journalPath, events) {
           // If we already recorded this entry (e.g. from a prune event first),
           // update it; otherwise append.
           const idx = dbg.entries.findIndex(
-            e => e.ts === event.data.ts && e.task === event.data.task
+            e => e.ts === event.data.ts && e.act === event.data.act
           );
           if (idx >= 0) {
             dbg.entries[idx] = { ...dbg.entries[idx], ...event.data };
@@ -133,7 +133,7 @@ function appendDebugEvents(journalPath, events) {
         case 'entry_rolled': {
           // Find existing entry and update its _debug block; if not found, insert.
           const idx = dbg.entries.findIndex(
-            e => e.ts === event.entry.ts && e.task === event.entry.task
+            e => e.ts === event.entry.ts && e.act === event.entry.act
           );
           if (idx >= 0) {
             dbg.entries[idx]._debug = Object.assign(dbg.entries[idx]._debug || {}, {
@@ -158,7 +158,7 @@ function appendDebugEvents(journalPath, events) {
 
         case 'entry_status_update': {
           const idx = dbg.entries.findIndex(
-            e => e.ts === event.ts && e.task === event.task
+            e => e.ts === event.ts && e.act === event.act
           );
           if (idx >= 0) {
             dbg.entries[idx]._debug = Object.assign(dbg.entries[idx]._debug || {}, {
@@ -214,12 +214,13 @@ function appendDebugEvents(journalPath, events) {
 // for any entry that would have at least one field truncated.
 function detectTruncations(data) {
   const result = {};
-  if (!data || !Array.isArray(data.completed)) return result;
-  for (const entry of data.completed) {
+  const entries = data && (Array.isArray(data.done) ? data.done : Array.isArray(data.completed) ? data.completed : null);
+  if (!entries) return result;
+  for (const entry of entries) {
     if (!entry || !entry.ts) continue;
     const truncatedFields = [];
     const originalLengths = {};
-    for (const field of ['task', 'result', 'ctx']) {
+    for (const field of ['act', 'result', 'ctx']) {
       if (typeof entry[field] === 'string' && entry[field].length > FIELD_LIMITS[field]) {
         truncatedFields.push(field);
         originalLengths[field] = entry[field].length;
@@ -232,23 +233,21 @@ function detectTruncations(data) {
   return result;
 }
 
-// Return entries in newJournal.completed that are not present in oldJournal.completed
-// (matched by ts + task). These are entries Claude just added.
+// Return entries in newJournal.done that are not present in oldJournal.done
+// (matched by ts + act). These are entries Claude just added.
 function findNewEntries(oldJournal, newJournal) {
-  if (!newJournal || !Array.isArray(newJournal.completed)) return [];
-  const oldKeys = new Set(
-    (oldJournal && Array.isArray(oldJournal.completed) ? oldJournal.completed : [])
-      .filter(Boolean)
-      .map(e => `${e.ts}|${e.task}`)
-  );
-  return newJournal.completed.filter(Boolean).filter(e => e && !oldKeys.has(`${e.ts}|${e.task}`));
+  const newDone = newJournal && (Array.isArray(newJournal.done) ? newJournal.done : Array.isArray(newJournal.completed) ? newJournal.completed : null);
+  if (!newDone) return [];
+  const oldDone = oldJournal && (Array.isArray(oldJournal.done) ? oldJournal.done : Array.isArray(oldJournal.completed) ? oldJournal.completed : []) || [];
+  const oldKeys = new Set(oldDone.filter(Boolean).map(e => `${e.ts}|${e.act || e.task}`));
+  return newDone.filter(Boolean).filter(e => e && !oldKeys.has(`${e.ts}|${e.act || e.task}`));
 }
 
-// Compare upcoming arrays and return mutation events for items added or removed.
+// Compare plan arrays and return mutation events for items added or removed.
 function diffUpcoming(oldJournal, newJournal, now) {
   const events = [];
-  const oldUp = (oldJournal && Array.isArray(oldJournal.upcoming) ? oldJournal.upcoming : []).filter(Boolean);
-  const newUp = (newJournal && Array.isArray(newJournal.upcoming) ? newJournal.upcoming : []).filter(Boolean);
+  const oldUp = (oldJournal && (Array.isArray(oldJournal.plan) ? oldJournal.plan : Array.isArray(oldJournal.upcoming) ? oldJournal.upcoming : [])).filter(Boolean);
+  const newUp = (newJournal && (Array.isArray(newJournal.plan) ? newJournal.plan : Array.isArray(newJournal.upcoming) ? newJournal.upcoming : [])).filter(Boolean);
   for (const task of newUp) {
     if (!oldUp.includes(task)) {
       events.push({ type: 'upcoming_mutation', data: { ts: now, type: 'added', task, trigger: 'claude_write' } });

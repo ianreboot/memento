@@ -27,7 +27,7 @@
 
 ---
 
-Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Install takes 10 seconds, adds ~350 tokens to a recovered session (less for fresh starts), and runs invisibly in the background.
+Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Unlike memory tools that require Claude to query a store, memento *pushes* context automatically — so even a just-compacted Claude recovers without knowing it needs to ask. Install takes 10 seconds, adds ~350 tokens at session recovery (plus ~50 tokens per message during active work), and runs invisibly in the background.
 
 ## The Problem
 
@@ -61,7 +61,7 @@ Compaction happens
   └── SessionStart hook fires again → full journal re-injected → Claude resumes instantly
 ```
 
-**Push-based recovery.** The hook injects the journal automatically on every session start — including after compaction. Claude does not need to know to ask for context; it arrives before the first message. This is the key difference from pull-based memory tools that require the AI to query a memory store — which a just-compacted Claude cannot reliably do on its own.
+**Push-based recovery — this is the key design decision.** The hook injects the journal automatically on every session start, including after compaction. Claude does not need to know to ask for context; it arrives before the first message. Pull-based memory tools require the AI to query a store — but a just-compacted Claude has no memory of what to query. Memento sidesteps this entirely.
 
 Nothing appears in your conversation. The journal is a background process. Journal writes appear as Write tool calls in your tool stream — this is visible confirmation that memento is saving your work, not conversation content. Hook output (the context injection itself) is never visible.
 
@@ -151,7 +151,7 @@ Examples: `"deploy auth service — build passed, uploading assets"` or `"blocke
 
 ### Rolling window
 
-The journal keeps the 6 most recent done entries (configurable via `MEMENTO_MAX_ENTRIES`) plus up to 3 plan items. Older entries are folded into a rolling summary that preserves both task names and causal context. The journal file stays under 6KB and each journal injection costs under 350 tokens — negligible against a 200k context window. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
+The journal keeps the 6 most recent done entries (configurable via `MEMENTO_MAX_ENTRIES`) plus up to 3 plan items. Older entries are folded into a rolling summary that preserves both task names and causal context. The journal file stays under 6KB and each session-start injection costs under 350 tokens — negligible against a 200k context window. The UserPromptSubmit hook adds a ~50-token per-message reminder while an active mission is open. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
 
 ### Entry format
 
@@ -188,7 +188,7 @@ The mission closes automatically when you run `/clear`, change projects, or expl
 
 **What is stored:** Task names, results, and the context (your words or tool output) that explains why each task was needed. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>.json`.
 
-**What is not stored:** File contents, full command output, credentials, secrets, or any data you have not asked to track.
+**What is not stored:** File contents, full command output, credentials, secrets, or any data you have not asked to track. The UserPromptSubmit hook reads each message to detect mission-closing phrases (`/clear`, project-shift language); this text is never stored, logged, or transmitted.
 
 **Who can read it:** Only your local user account. Files are created with `0600` permissions (owner read/write only). Writes are atomic (temp file + rename) and symlink-safe — memento defends against symlink-clobber attacks at both the file and parent-directory level.
 

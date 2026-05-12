@@ -84,8 +84,19 @@ function run(rawInput) {
     // No journal yet — emit path hint so Claude knows the canonical path to
     // write to. Without this, Claude cannot know which path the hook expects,
     // and may write to a different path that never gets injected.
+    //
+    // Source-aware language: post-compaction sessions get urgency since the session
+    // is already in motion and Claude must create the journal before any task runs.
+    const isPostCompaction = (source === 'compact' || source === 'resume');
+    const creation = isPostCompaction
+      ? `You are recovering from compaction with no prior journal. ` +
+        `Create the journal IMMEDIATELY from available context — infer mission from ` +
+        `compaction summary or WORK_STATE if present. Set project to "${projectTag}".`
+      : `Create journal at the path above BEFORE your first task. ` +
+        `If mission is unclear, use "[pending]" and update when clear. ` +
+        `Any session without a journal is unprotected against compaction. Set project to "${projectTag}".`;
     const hint = `[MEMENTO] No prior journal | instance:${instanceTag} | proj:${projectTag} | path:${journalPath}\n` +
-                 `Create journal at the path above when the mission is clear. Set project field to "${projectTag}".`;
+                 creation;
     if (DEBUG) {
       const hintBytes = Buffer.byteLength(hint, 'utf8');
       appendDebugEvents(journalPath, [{
@@ -135,10 +146,10 @@ function run(rawInput) {
   const isRecovery = (source === 'compact' || source === 'resume');
   const mode = isRecovery ? 'full' : 'brief';
 
-  const output = formatJournalForInjection(journal, mode, journalPath);
+  const output = formatJournalForInjection(journal, mode, journalPath, projectTag);
 
   if (DEBUG) {
-    const completedCount = (Array.isArray(journal.completed) ? journal.completed : []).filter(Boolean).length;
+    const completedCount = (Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : [])).filter(Boolean).length;
     appendDebugEvents(journalPath, [{
       type: 'injection',
       data: {

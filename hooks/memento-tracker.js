@@ -80,7 +80,7 @@ function run(rawInput) {
     if (journal && !journal.mission_closed) {
       const closedAt = new Date().toISOString();
       journal.mission_closed = closedAt;
-      journal.upcoming = [];   // C2: clear upcoming on close — closed mission has no pending tasks
+      journal.plan = [];      // clear plan on close — closed mission has no pending tasks
       writeJournal(journalPath, journal);
       if (DEBUG) {
         appendDebugEvents(journalPath, [{
@@ -115,8 +115,7 @@ function run(rawInput) {
             additionalContext: `[MEMENTO] Journal at ${journalPath} is corrupt or unreadable. ` +
               `Use the Write tool to create a fresh journal at that path. ` +
               `Minimal structure: {"mission":"[current goal]","mission_opened":"${new Date().toISOString()}",` +
-              `"mission_closed":null,"project":"${projectTag}","summary":null,"state":"active",` +
-              `"state_reason":null,"in_progress":null,"completed":[],"upcoming":[]}`,
+              `"mission_closed":null,"project":"${projectTag}","summary":null,"wip":null,"done":[],"plan":[]}`,
           },
         }));
       }
@@ -124,35 +123,54 @@ function run(rawInput) {
     process.exit(0);
   }
 
-  if (journal && journal.mission && !journal.mission_closed) {
-    if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
-      journal.project = projectTag;
-      writeJournal(journalPath, journal);
+  if (journal && journal.mission) {
+    if (!journal.mission_closed) {
+      // Active mission — sync project tag, then emit staleness-aware reminder.
+      if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
+        journal.project = projectTag;
+        writeJournal(journalPath, journal);
+      }
+
+      const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
+      const lastEntry = done.length > 0 ? done[done.length - 1] : null;
+      const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
+
+      // Staleness detection: if the last completed entry is > 30 min old the journal
+      // may be behind current work. Escalate the reminder until Claude writes again
+      // (a write resets the timestamp and the escalation stops automatically).
+      const STALE_REMINDER_MS = 30 * 60 * 1000;
+      const lastEntryMs = lastEntry && lastEntry.ts ? new Date(lastEntry.ts).getTime() : 0;
+      const isStale = !!(lastEntry && (Date.now() - lastEntryMs > STALE_REMINDER_MS));
+
+      let detail;
+      if (isStale) {
+        const mins = Math.round((Date.now() - lastEntryMs) / 60000);
+        detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
+      } else if (wip) {
+        detail = ` | wip: "${wip}"`;
+      } else if (lastEntry) {
+        detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
+      } else {
+        detail = '';
+      }
+
+      const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal when information that compaction would destroy changes.`;
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: reminder,
+        },
+      }));
+    } else {
+      // Closed mission — prompt Claude to open a new one if this is new work.
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: '[MEMENTO] Prior mission closed. If this is new work, open a new mission now — ' +
+            'write journal with mission_opened reset, mission_closed:null, done:[], plan:[first task].',
+        },
+      }));
     }
-    // Minimal reminder — full instructions already live in SKILL.md and were
-    // injected at session start. This is just an attention anchor to prevent
-    // Claude from drifting away from the journaling behavior mid-session.
-    //
-    // Output format is the hookSpecificOutput JSON structure. This is injected
-    // as system context and is invisible to the user.
-    // D2: Richer reminder — include mission name, state, and last/wip for orientation.
-    // This keeps Claude anchored throughout long sessions without relying on the
-    // session-start injection remaining in active context.
-    const lastEntry = Array.isArray(journal.completed) && journal.completed.length > 0
-      ? journal.completed[journal.completed.length - 1]
-      : null;
-    const wip   = journal.in_progress ? journal.in_progress.task : null;
-    const state = journal.state || 'active';
-    let reminder = `[MEMENTO: "${journal.mission}" | state:${state}`;
-    if (wip)                 reminder += ` | wip: "${wip}"`;
-    else if (lastEntry)      reminder += ` | last: "${lastEntry.task}"`;
-    reminder += '] Update journal after task completion.';
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: reminder,
-      },
-    }));
   }
 
   process.exit(0);

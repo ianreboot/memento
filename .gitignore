@@ -4,3 +4,6 @@ node_modules/
 .env
 *.local
 dist/
+
+# AI feedback sessions — may contain internal project references; stored locally only
+docs/feedback/

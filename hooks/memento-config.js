@@ -39,18 +39,18 @@ const { execFileSync } = require('child_process');
 // ---------------------------------------------------------------------------
 
 // Maximum journal file size. A fully-populated journal at max field lengths:
-//   mission:200 + summary:300 + 8×(task:80+result:120+ctx:120+ts:24) + 5×upcoming:100
-//   ≈ 4300 bytes + JSON formatting overhead. 6KB provides safe headroom.
+//   mission:400 + summary:300 + 6×(act:80+result:120+ctx:120+ts:24) + 3×plan:150
+//   ≈ 3000 bytes + JSON formatting overhead. 6KB provides safe headroom.
 // Files exceeding this are treated as corrupt and replaced with a fresh journal.
 const MAX_JOURNAL_BYTES = parseInt(process.env.MEMENTO_MAX_FILE_KB || '', 10) * 1024 || 6 * 1024;
 
-// Rolling window: keep at most this many completed entries before summarizing.
-// At ~25 tokens/entry in injection format, 8 entries ≈ 200 tokens — negligible
-// against a 200k context window.
-const MAX_COMPLETED = 8;
+// Rolling window: keep at most this many done entries before summarizing.
+// At ~25 tokens/entry in injection format, 6 entries ≈ 150 tokens — negligible
+// against a 200k context window. Configurable via MEMENTO_MAX_ENTRIES (range 4–24).
+const MAX_COMPLETED = Math.max(4, Math.min(24, parseInt(process.env.MEMENTO_MAX_ENTRIES || '', 10) || 6));
 
-// Maximum upcoming tasks to track. Claude rarely plans more than 5 concrete steps.
-const MAX_UPCOMING = 5;
+// Maximum plan items to track. Event-driven design means fewer, higher-quality anchors.
+const MAX_UPCOMING = 3;
 
 // Summary field max length in characters. 300 chars fits ~4-5 folded entries,
 // providing meaningful historical breadth at negligible token cost (~75 tokens).
@@ -61,7 +61,7 @@ const MAX_SUMMARY_CHARS = 300;
 const STALE_DAYS = parseInt(process.env.MEMENTO_STALE_DAYS || '', 10) || 7;
 
 // Character limits enforced on individual entry fields before writing.
-const FIELD_LIMITS = { task: 80, result: 120, ctx: 120, mission: 200 };
+const FIELD_LIMITS = { act: 80, result: 120, ctx: 120, mission: 400, wip: 150 };
 
 // Working directory names that provide no useful project identity. When the
 // cwd basename matches one of these, fall through to the next tag source.
@@ -211,6 +211,8 @@ function readJournal(journalPath) {
     if (typeof journal.mission !== 'string') return null;
     if (journal.completed !== undefined && !Array.isArray(journal.completed)) return null;
     if (journal.upcoming !== undefined && !Array.isArray(journal.upcoming)) return null;
+    if (journal.done !== undefined && !Array.isArray(journal.done)) return null;
+    if (journal.plan !== undefined && !Array.isArray(journal.plan)) return null;
 
     return journal;
   } catch (e) {
@@ -408,41 +410,52 @@ function applyFieldLimits(journal) {
   if (typeof j.mission === 'string') {
     j.mission = j.mission.slice(0, FIELD_LIMITS.mission);
   }
-  if (Array.isArray(j.completed)) {
-    j.completed = j.completed.filter(Boolean).map(entry => ({
-      ...entry,
-      task:   typeof entry.task   === 'string' ? entry.task.slice(0, FIELD_LIMITS.task)   : '',
+
+  // Normalize done entries (backward-compat: fall back to completed for old journals).
+  // Write only the new 'done' field name — old 'completed' fades out on next write.
+  const rawDone = Array.isArray(j.done) ? j.done : (Array.isArray(j.completed) ? j.completed : []);
+  j.done = rawDone.filter(Boolean).map(entry => {
+    // backward-compat: old entries use 'task', new entries use 'act'
+    const act = typeof entry.act === 'string' ? entry.act : (typeof entry.task === 'string' ? entry.task : '');
+    return {
+      act:    act.slice(0, FIELD_LIMITS.act),
       result: typeof entry.result === 'string' ? entry.result.slice(0, FIELD_LIMITS.result) : '',
       // C1: preserve absent ctx as absent — SKILL.md says "omit the field entirely" when unknown.
       // Coercing undefined→'' makes absent indistinguishable from empty, losing that signal.
       ...(typeof entry.ctx === 'string' ? { ctx: entry.ctx.slice(0, FIELD_LIMITS.ctx) } : {}),
-    }));
+      ts:     typeof entry.ts === 'string' ? entry.ts : new Date().toISOString(),
+    };
+  });
+  delete j.completed; // remove old field name
+
+  // Normalize plan items (backward-compat: fall back to upcoming for old journals).
+  const rawPlan = Array.isArray(j.plan) ? j.plan : (Array.isArray(j.upcoming) ? j.upcoming : []);
+  j.plan = rawPlan.filter(Boolean).slice(0, MAX_UPCOMING).map(t => String(t).slice(0, 150));
+  delete j.upcoming; // remove old field name
+
+  // Normalize wip (backward-compat: extract from in_progress.progress for old journals).
+  // wip is a plain string, not an object — fold blocker/state info directly into it.
+  if (typeof j.wip === 'string') {
+    j.wip = j.wip.slice(0, FIELD_LIMITS.wip);
+  } else if (j.wip == null) {
+    if (j.in_progress && typeof j.in_progress.progress === 'string' && j.in_progress.progress) {
+      j.wip = j.in_progress.progress.slice(0, FIELD_LIMITS.wip);
+    } else {
+      j.wip = null;
+    }
+  } else {
+    j.wip = null;
   }
+  delete j.in_progress; // remove old field name
+
+  // Drop state/state_reason — folded into wip string in v0.2.0
+  delete j.state;
+  delete j.state_reason;
+
   if (typeof j.summary === 'string') {
     j.summary = j.summary.slice(0, MAX_SUMMARY_CHARS);
   }
-  if (Array.isArray(j.upcoming)) {
-    j.upcoming = j.upcoming.filter(Boolean).slice(0, MAX_UPCOMING).map(t => String(t).slice(0, 150));
-  }
-  // D3: normalize state
-  if (j.state !== undefined) {
-    j.state = ['active', 'blocked', 'waiting'].includes(j.state) ? j.state : 'active';
-  }
-  if (typeof j.state_reason === 'string') {
-    j.state_reason = j.state_reason.slice(0, 120);
-  } else if (j.state_reason !== null && j.state_reason !== undefined) {
-    j.state_reason = null;
-  }
-  // D1: normalize in_progress
-  if (j.in_progress !== null && j.in_progress !== undefined && typeof j.in_progress === 'object') {
-    j.in_progress = {
-      task:     typeof j.in_progress.task     === 'string' ? j.in_progress.task.slice(0, 80)     : '',
-      started:  typeof j.in_progress.started  === 'string' ? j.in_progress.started                : new Date().toISOString(),
-      progress: typeof j.in_progress.progress === 'string' ? j.in_progress.progress.slice(0, 120) : '',
-    };
-  } else if (j.in_progress !== null) {
-    j.in_progress = null;
-  }
+
   return j;
 }
 
@@ -469,9 +482,14 @@ function pruneJournal(journal, opts) {
 
   const j = JSON.parse(JSON.stringify(journal)); // deep copy
 
-  // Filter null entries from arrays
-  const completed = (Array.isArray(j.completed) ? j.completed : []).filter(Boolean);
-  j.completed = completed;
+  // Normalize done array — backward-compat: accept either 'done' or 'completed'
+  const completed = (Array.isArray(j.done) ? j.done : (Array.isArray(j.completed) ? j.completed : [])).filter(Boolean);
+  j.done = completed;
+  delete j.completed;
+  // Normalize plan array — backward-compat: accept either 'plan' or 'upcoming'
+  if (!Array.isArray(j.plan) && Array.isArray(j.upcoming)) { j.plan = j.upcoming; }
+  if (!Array.isArray(j.plan)) j.plan = [];
+  delete j.upcoming;
 
   // 1. Staleness check — if the newest entry is too old, collapse everything
   if (completed.length > 0) {
@@ -479,10 +497,13 @@ function pruneJournal(journal, opts) {
     const newestTs = timestamps.length > 0 ? new Date(Math.max(...timestamps)) : null;
     if (newestTs && !isNaN(newestTs)) {
       const ageDays = (Date.now() - newestTs.getTime()) / (1000 * 60 * 60 * 24);
-      if (ageDays > STALE_DAYS) {
+      // Two-tier staleness: closed missions collapse at STALE_DAYS; active missions
+      // get 2× the threshold so journals survive extended breaks without losing task detail.
+      const staleThreshold = j.mission_closed ? STALE_DAYS : STALE_DAYS * 2;
+      if (ageDays > staleThreshold) {
         // Capture debug events before mutating j
         if (dbg) {
-          const upcomingCleared = Array.isArray(j.upcoming) ? j.upcoming.filter(Boolean).length : 0;
+          const upcomingCleared = Array.isArray(j.plan) ? j.plan.filter(Boolean).length : 0;
           const batchSummary = summarizeEntries(completed);
           const summaryAfter = merge(j.summary, `[stale] ${batchSummary}`);
           debugEvents.push({
@@ -493,6 +514,8 @@ function pruneJournal(journal, opts) {
               entries_collapsed:     completed.length,
               upcoming_cleared:      upcomingCleared,
               newest_entry_age_days: Math.round(ageDays * 10) / 10,
+              stale_threshold_days:  staleThreshold,
+              mission_was_closed:    !!j.mission_closed,
               summary_before:        j.summary,
               summary_after:         summaryAfter,
             },
@@ -507,9 +530,9 @@ function pruneJournal(journal, opts) {
               pruned_at:  now,
             });
           }
-          // Upcoming items cleared by the collapse
-          if (Array.isArray(j.upcoming)) {
-            for (const task of j.upcoming.filter(Boolean)) {
+          // Plan items cleared by the collapse
+          if (Array.isArray(j.plan)) {
+            for (const task of j.plan.filter(Boolean)) {
               debugEvents.push({
                 type: 'upcoming_mutation',
                 data: { ts: now, type: 'cleared', task, trigger: 'stale_collapse' },
@@ -522,9 +545,9 @@ function pruneJournal(journal, opts) {
         // B3: set mission_closed so recovering Claude doesn't see a ghost-active mission.
         const batchSummary = summarizeEntries(completed);
         j.summary = merge(j.summary, `[stale] ${batchSummary}`);
-        j.completed = [];
-        j.upcoming = [];
-        j.in_progress = null;
+        j.done = [];
+        j.plan = [];
+        j.wip = null;
         if (!j.mission_closed) j.mission_closed = now;
         return dbg ? { journal: j, debugEvents } : j;
       }
@@ -532,8 +555,8 @@ function pruneJournal(journal, opts) {
   }
 
   // 2. Rolling window: fold oldest entries into summary until we're within cap
-  while (j.completed && j.completed.length > MAX_COMPLETED) {
-    const oldest = j.completed.shift();
+  while (j.done && j.done.length > MAX_COMPLETED) {
+    const oldest = j.done.shift();
     if (!oldest) continue;
 
     const summaryBefore = j.summary;
@@ -566,9 +589,9 @@ function pruneJournal(journal, opts) {
     j.summary = summaryAfter;
   }
 
-  // 3. Cap upcoming array
-  if (Array.isArray(j.upcoming)) {
-    j.upcoming = j.upcoming.filter(Boolean).slice(0, MAX_UPCOMING);
+  // 3. Cap plan array
+  if (Array.isArray(j.plan)) {
+    j.plan = j.plan.filter(Boolean).slice(0, MAX_UPCOMING);
   }
 
   return dbg ? { journal: j, debugEvents } : j;
@@ -577,14 +600,22 @@ function pruneJournal(journal, opts) {
 // Fold a completed entry into a brief summary line.
 function entryToSummaryLine(entry) {
   if (!entry) return '';
-  const parts = [entry.task || ''];
+  const act = entry.act || entry.task || '';
+  const parts = [act];
   if (entry.result) parts.push(`-> ${entry.result}`);
+  // Preserve ctx — carries forward-causation intent that act/result alone loses in summary
+  if (typeof entry.ctx === 'string') parts.push(`(${entry.ctx})`);
   return parts.join(' ');
 }
 
 // Summarize a batch of entries into one line (used for stale collapse).
+// Preserves ctx content — it carries forward-causation intent that pure act names lose.
 function summarizeEntries(entries) {
-  return entries.filter(Boolean).map(e => e.task || '').join(', ');
+  return entries.filter(Boolean).map(e => {
+    const act = e.act || e.task || '';
+    const ctx = typeof e.ctx === 'string' ? ` (${e.ctx})` : '';
+    return act + ctx;
+  }).join(', ');
 }
 
 // Merge a new line into the summary string, trimming from the start if over cap.
@@ -614,8 +645,16 @@ function merge(existing, newLine) {
 //
 // The journal path is included in the header so Claude knows where to write
 // updates via the Write tool — this is the ONLY way Claude knows the path.
-function formatJournalForInjection(journal, mode, journalPath) {
+function formatJournalForInjection(journal, mode, journalPath, projectTag) {
   if (!journal) return '';
+
+  // Cross-project suppression: if the journal belongs to a different project,
+  // the detailed entries are irrelevant noise regardless of mission status.
+  // Keep only the mission signal and a one-line summary so the recovering Claude
+  // knows the previous context briefly before pivoting to the current project.
+  const crossProject = !!(projectTag && projectTag !== 'default'
+    && journal.project && journal.project !== 'default'
+    && journal.project !== projectTag);
 
   // Defensive limits — cap what gets injected regardless of what's on disk
   const mission = (journal.mission || '[no mission set]').slice(0, FIELD_LIMITS.mission);
@@ -623,57 +662,59 @@ function formatJournalForInjection(journal, mode, journalPath) {
   const pathHint = journalPath ? ` | path:${journalPath}` : '';
 
   const closedMark = journal.mission_closed ? ' (CLOSED)' : '';
-  const state      = journal.state || 'active';
-  const stateMark  = (state !== 'active' && !journal.mission_closed)
-    ? ` [${state.toUpperCase()}${journal.state_reason ? ': ' + journal.state_reason : ''}]`
-    : '';
+
+  // Backward-compat reads for renamed fields
+  const done   = Array.isArray(journal.done)  ? journal.done  : (Array.isArray(journal.completed) ? journal.completed : []);
+  const plan   = Array.isArray(journal.plan)  ? journal.plan  : (Array.isArray(journal.upcoming)  ? journal.upcoming  : []);
+  const wipStr = typeof journal.wip === 'string' ? journal.wip
+    : (journal.in_progress && journal.in_progress.progress ? journal.in_progress.progress : null);
 
   if (mode === 'brief') {
-    const completed = (Array.isArray(journal.completed) ? journal.completed : []).filter(Boolean);
-    const upcoming  = (Array.isArray(journal.upcoming)  ? journal.upcoming  : []).filter(Boolean);
-    return `[MEMENTO] Mission: ${mission}${closedMark}${stateMark} | proj:${project}${pathHint}\n` +
-           `${completed.length} task(s) done, ${upcoming.length} pending. Update journal via Write tool after task completion.`;
+    const doneFilt = done.filter(Boolean);
+    const planFilt = plan.filter(Boolean);
+    return `[MEMENTO] Mission: ${mission}${closedMark} | proj:${project}${pathHint}\n` +
+           `${doneFilt.length} task(s) done, ${planFilt.length} pending. Update journal when information that compaction would destroy changes.`;
   }
 
   // Full injection (post-compaction recovery)
   const lines = [];
-  lines.push(`[MEMENTO] Mission: ${mission}${closedMark}${stateMark} | proj:${project}${pathHint}`);
+  lines.push(`[MEMENTO] Mission: ${mission}${closedMark} | proj:${project}${pathHint}`);
 
-  if (journal.summary) {
-    lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
+  if (crossProject) {
+    // Suppress detailed entries from a different, closed project — they are irrelevant noise.
+    // Preserve only the mission-closed signal (already in the header) and a one-line summary.
+    const firstAct = done.length > 0 ? (done[0].act || done[0].task || null) : null;
+    const xpSummary = journal.summary || firstAct;
+    if (xpSummary) lines.push(`Previous work (${journal.project}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
+  } else {
+    if (journal.summary) {
+      lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
+    }
+
+    const doneEntries = done.slice(0, MAX_COMPLETED).filter(Boolean);
+    for (const entry of doneEntries) {
+      // backward-compat: old entries use 'task', new entries use 'act'
+      const act    = (typeof entry.act === 'string' ? entry.act : (typeof entry.task === 'string' ? entry.task : '')).slice(0, FIELD_LIMITS.act);
+      const result = (typeof entry.result === 'string' ? entry.result : '').slice(0, FIELD_LIMITS.result);
+      const ctx    = (typeof entry.ctx    === 'string' ? entry.ctx    : '').slice(0, FIELD_LIMITS.ctx);
+      let line = `Done: ${act}`;
+      if (result) line += ` -> ${result}`;
+      if (ctx)    line += ` | ctx: ${ctx}`;
+      lines.push(line);
+    }
+
+    // Show wip string between Done entries and Plan entries
+    if (wipStr) {
+      lines.push(`WIP: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
+    }
+
+    const planItems = plan.slice(0, MAX_UPCOMING).filter(Boolean);
+    if (planItems.length > 0) {
+      lines.push(`Plan: ${planItems.map(t => String(t).slice(0, 150)).join(' | ')}`);
+    }
   }
 
-  const completed = (Array.isArray(journal.completed) ? journal.completed : []).slice(0, MAX_COMPLETED).filter(Boolean);
-  for (const entry of completed) {
-    const task   = (typeof entry.task   === 'string' ? entry.task   : '').slice(0, FIELD_LIMITS.task);
-    const result = (typeof entry.result === 'string' ? entry.result : '').slice(0, FIELD_LIMITS.result);
-    const ctx    = (typeof entry.ctx    === 'string' ? entry.ctx    : '').slice(0, FIELD_LIMITS.ctx);
-    let line = `Done: ${task}`;
-    if (result) line += ` -> ${result}`;
-    if (ctx)    line += ` | ctx: ${ctx}`;
-    lines.push(line);
-  }
-
-  // D1: show in-progress task between Done entries and Next entries
-  if (journal.in_progress && journal.in_progress.task) {
-    const wip = journal.in_progress;
-    let wipLine = `WIP: ${String(wip.task).slice(0, 80)}`;
-    if (wip.progress) wipLine += ` | ${String(wip.progress).slice(0, 120)}`;
-    lines.push(wipLine);
-  }
-
-  const upcoming = (Array.isArray(journal.upcoming) ? journal.upcoming : []).slice(0, MAX_UPCOMING).filter(Boolean);
-  if (upcoming.length > 0) {
-    lines.push(`Next: ${upcoming.map(t => String(t).slice(0, 150)).join(' | ')}`);
-  }
-
-  lines.push('');
-  lines.push(
-    'Update journal after each task: write JSON to the path above using the Write tool. ' +
-    'Write upcoming[] before starting a sequence; set in_progress before any task that spans multiple tool calls or launches an async agent. ' +
-    'Entries must reflect only what was stated by the user or observed in tool output — never infer or fabricate.'
-  );
-
+  // No footer paragraph — SKILL.md already contains the behavioral spec.
   return lines.join('\n');
 }
 
@@ -714,11 +755,9 @@ function newJournal(mission, project) {
     mission_closed: null,
     project:        project || 'default',
     summary:        null,
-    state:          'active',      // D3: 'active' | 'blocked' | 'waiting'
-    state_reason:   null,          // D3: why blocked/waiting (max 120 chars)
-    in_progress:    null,          // D1: { task, started, progress } for mid-task compaction
-    completed:      [],
-    upcoming:       [],
+    wip:            null,           // mid-task state or blocker string (max 150 chars)
+    done:           [],             // completed entries: { act, result, ctx?, ts }
+    plan:           [],             // next steps with causal anchors (max 3)
   };
 }
 

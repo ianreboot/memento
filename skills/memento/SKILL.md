@@ -115,6 +115,7 @@ Example:
 
 **Do NOT rewrite into a deliverable statement.** Preserve the user's words and urgency.
 **Do NOT summarize away constraints.** "user: don't change token format" is behavioral context a recovering Claude must have.
+**Include execution style constraints**, not just task constraints. "maximize conversion psychology within compliance rules — don't just strip prohibited content" or "execute don't debate, flag concerns at end" are mission-level behavioral constraints a recovering Claude must have to produce the right output, not just the right task.
 
 Good:
 - `"memento v0.2.0 redesign: intent-anchor reframe -- user: new branch v0.2.0-intent-redesign, collapsed mission+intent field, event-driven writes -- done when: all files updated + tests pass + pushed"`
@@ -194,6 +195,8 @@ A task is a discrete action that changes project state or produces something the
 - A single bash command that is part of a larger task
 
 When in doubt: if the user could meaningfully say "did you do X yet?", it is a task.
+
+**Skip journaling for** rapid single-tool changes where git captures everything: one-file edits, copy fixes, style tweaks, deploys of already-committed code. Journal the decision that drove the change — not the mechanical execution. If compaction fired, would you need memento to reconstruct what happened, or would `git log` do it? If git suffices, skip the entry.
 
 **Discussion and research sessions** work the same as any other session — they have a mission, causal linkage, and done entries. A research session: `mission = "evaluate DB options for auth service -- must support row-level security, under $50/mo -- done when: user picks one"`, done entries with `ctx: note:` for eliminated options, `wip` for current evaluation state. No special casing needed.
 

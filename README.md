@@ -52,7 +52,7 @@ Session starts
 You send a message
   └── UserPromptSubmit hook checks for /clear → emits a brief reminder (invisible to you)
 
-Claude completes a task
+Information changes that compaction would destroy
   └── Claude writes a journal entry to disk via the Write tool
         task name, result, context (what you said or what the tool showed)
         (SKILL.md instructs Claude when and what to journal — the behavioral spec)
@@ -146,6 +146,8 @@ A task is a discrete action that changes project state or produces something you
 The most dangerous compaction scenario is mid-task: a half-deployed service, a partially refactored codebase, an interrupted multi-file edit. Memento's `wip` field is specifically designed for this: a plain string capturing exactly where you are and what is blocked, so the recovered Claude can verify and resume rather than starting over or guessing.
 
 Examples: `"deploy auth service — build passed, uploading assets"` or `"blocked: auth test 401 on valid token — root cause unknown"`.
+
+`wip` also works for **research and advisory sessions** where there are no discrete task completions. Set it after meaningful progress to capture current decision state — what's been eliminated, what remains, the open question. This is the write trigger for exploratory work: `"brand naming — IQ/combo/HomeDIY eliminated | candidates: crestven, ridgven | open: user deciding"`.
 
 ### Rolling window
 

@@ -4,7 +4,8 @@ description: >
   Persistent task memory across context compaction. Maintains a rolling journal of
   completed tasks, their results, and causal context so Claude can recover mid-task
   after compaction without human intervention. Hook injection is automatic and invisible.
-  Journal writes require Claude to use the Write tool after each task — no slash command needed.
+  Journal writes require Claude to use the Write tool when information changes that
+  compaction would destroy — no slash command needed.
 ---
 
 # Memento
@@ -22,7 +23,8 @@ Write the journal when information changes that compaction would destroy:
 2. **A result changes the decision landscape** — add a `done` entry with `ctx: note: X means we should Y`
 3. **User pivots or adds constraints** — update the `mission` field
 4. **Multi-step task begins** — set `wip` before the first tool call
-5. **Mission closes** — set `mission_closed`
+5. **Meaningful research progress** — in exploratory/advisory sessions, set `wip` to snapshot current decision state: what's been eliminated, what remains viable, the open question. This is the write trigger when there are no discrete task completions.
+6. **Mission closes** — set `mission_closed`
 
 ~3-7 writes per session. Do not write after every minor step — write when information that compaction would destroy has changed.
 
@@ -212,6 +214,14 @@ Priority: factual completeness over grammatical correctness. `"fix auth middlewa
 ```
 
 Also use `wip` for blockers: `"blocked: auth test 401 on valid token — root cause unknown"`
+
+For **research/advisory sessions** with no discrete task completions, use `wip` to capture decision state after meaningful progress:
+
+```json
+"wip": "brand naming — eliminated: IQ suffix, combo coinages, HomeDIY | candidates: crestven, ridgven (.com+.net free) | open: user deciding"
+```
+
+This ensures that if compaction fires mid-research, the recovering Claude knows exactly where the search stands without re-deriving it from artifacts.
 
 **Clear `wip`** (set to `null`) when the task completes — add it to `done` instead.
 

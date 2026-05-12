@@ -80,9 +80,7 @@ function run(rawInput) {
     if (journal && !journal.mission_closed) {
       const closedAt = new Date().toISOString();
       journal.mission_closed = closedAt;
-      journal.upcoming = [];   // clear upcoming on close — closed mission has no pending tasks
-      journal.state = 'waiting';
-      journal.state_reason = 'mission complete';
+      journal.plan = [];      // clear plan on close — closed mission has no pending tasks
       writeJournal(journalPath, journal);
       if (DEBUG) {
         appendDebugEvents(journalPath, [{
@@ -117,8 +115,7 @@ function run(rawInput) {
             additionalContext: `[MEMENTO] Journal at ${journalPath} is corrupt or unreadable. ` +
               `Use the Write tool to create a fresh journal at that path. ` +
               `Minimal structure: {"mission":"[current goal]","mission_opened":"${new Date().toISOString()}",` +
-              `"mission_closed":null,"project":"${projectTag}","summary":null,"state":"active",` +
-              `"state_reason":null,"in_progress":null,"completed":[],"upcoming":[]}`,
+              `"mission_closed":null,"project":"${projectTag}","summary":null,"wip":null,"done":[],"plan":[]}`,
           },
         }));
       }
@@ -134,11 +131,9 @@ function run(rawInput) {
         writeJournal(journalPath, journal);
       }
 
-      const lastEntry = Array.isArray(journal.completed) && journal.completed.length > 0
-        ? journal.completed[journal.completed.length - 1]
-        : null;
-      const wip   = journal.in_progress ? journal.in_progress.task : null;
-      const state = journal.state || 'active';
+      const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
+      const lastEntry = done.length > 0 ? done[done.length - 1] : null;
+      const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
 
       // Staleness detection: if the last completed entry is > 30 min old the journal
       // may be behind current work. Escalate the reminder until Claude writes again
@@ -154,12 +149,12 @@ function run(rawInput) {
       } else if (wip) {
         detail = ` | wip: "${wip}"`;
       } else if (lastEntry) {
-        detail = ` | last: "${lastEntry.task}"`;
+        detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
       } else {
         detail = '';
       }
 
-      const reminder = `[MEMENTO: "${journal.mission}" | state:${state}${detail}] Update journal after task completion.`;
+      const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal after task completion.`;
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
@@ -172,7 +167,7 @@ function run(rawInput) {
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
           additionalContext: '[MEMENTO] Prior mission closed. If this is new work, open a new mission now — ' +
-            'write journal with mission_opened reset, mission_closed:null, completed:[], upcoming:[first task].',
+            'write journal with mission_opened reset, mission_closed:null, done:[], plan:[first task].',
         },
       }));
     }

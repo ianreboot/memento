@@ -5,7 +5,7 @@
 <h1 align="center">memento</h1>
 
 <p align="center">
-  <strong>automatic task recovery after context compaction — zero user intervention</strong>
+  <strong>preserves intent across context compaction — the why behind your work, not just the what</strong>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 ---
 
-Claude Code forgets everything when context compaction fires. Memento keeps a lightweight task journal on disk and re-injects it automatically, so Claude picks up exactly where it left off — no questions asked. Install takes 10 seconds, costs under 2,000 tokens total (journal injection ~400 tokens, SKILL.md behavioral spec ~1,500 tokens loaded once per session), and runs invisibly in the background.
+Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Install takes 10 seconds, costs under 2,000 tokens total (journal injection ~350 tokens, SKILL.md behavioral spec ~1,500 tokens loaded once per session), and runs invisibly in the background.
 
 ## The Problem
 
@@ -70,14 +70,12 @@ Nothing appears in your conversation. The journal is a background process. Journ
 After compaction fires, Claude sees this injected silently into its system context:
 
 ```
-[MEMENTO] Mission: ship auth fix + pricing analysis | proj:myapp | path:/home/alice/.claude/.memento/alice.json
+[MEMENTO] Mission: ship auth fix + pricing analysis -- deploy to staging only, no token format changes -- done when: tests pass + health check green | proj:myapp | path:/home/alice/.claude/.memento/alice.json
 Sum: schema migration done, staging env configured
-Done: fix auth middleware -> PASETO impl, expiry corrected | ctx: user said "auth is broken before deploy"
-Done: analyze pricing -> 3 gaps, margins off 12% | ctx: pricing_check.py showed negative margin on SKU-47
-WIP: deploy auth fix | connected to staging, pre-flight checks next
-Next: pricing decision | run integration tests
-
-Update journal after each task: write JSON to the path above using the Write tool.
+Done: fix auth middleware -> PASETO impl, expiry corrected | ctx: user: auth is broken before deploy
+Done: analyze pricing -> 3 gaps, margins off 12% | ctx: note: margin loss on SKU-47 means pricing model must be revised before Q3 launch
+WIP: deploy auth fix — connected to staging, pre-flight checks next
+Plan: pricing decision | run integration tests
 ```
 
 Claude reads this before the first post-compaction message arrives and resumes without asking you to re-explain anything.
@@ -122,16 +120,16 @@ Each journal entry captures three things:
 
 | Field | What it contains | Source |
 |-------|-----------------|--------|
-| `task` | What was done | Claude's description |
+| `act` | What was done | Claude's description |
 | `result` | What it produced (numbers, paths, key findings) | Direct from tool output |
-| `ctx` | Why it was needed | Only what you said, or what a tool showed |
+| `ctx` | Why it mattered — and what it means for next steps | Only what you said, or what a tool showed |
 
 **The fidelity rule**: `ctx` only contains what you explicitly stated or what tool output directly showed. If the reason was not stated, `ctx` is omitted. Memento never infers or fabricates causal chains.
 
 **ctx typed prefixes** tell a recovering Claude how to trust the context:
 - `user: <exact words>` — what you said (authoritative; drives recovery behavior)
 - `tool: <output snippet>` — what a tool showed (may be stale; verify before acting on it)
-- `note: <recovery hint>` — critical context written by Claude for the next session
+- `note: <forward causation>` — a result means Claude should... (e.g., "note: margin loss on SKU-47 means Q3 launch must hold until pricing revised")
 
 ### What counts as a task
 
@@ -143,26 +141,24 @@ A task is a discrete action that changes project state or produces something you
 
 **Not** a task: reading a file, running a status check, answering a question.
 
-### In-progress tracking
+### WIP tracking
 
-The most dangerous compaction scenario is mid-task: a half-deployed service, a partially refactored codebase, an interrupted multi-file edit. Memento's `in_progress` field is specifically designed for this: it preserves exactly what was interrupted and where, so the recovered Claude can verify and resume rather than starting over or guessing.
+The most dangerous compaction scenario is mid-task: a half-deployed service, a partially refactored codebase, an interrupted multi-file edit. Memento's `wip` field is specifically designed for this: a plain string capturing exactly where you are and what is blocked, so the recovered Claude can verify and resume rather than starting over or guessing.
 
-### Mission state
-
-The journal tracks whether the current mission is `active`, `blocked`, or `waiting`. If Claude was blocked on something when compaction fired, the next instance knows to investigate the blocker before proceeding rather than blindly moving on.
+Examples: `"deploy auth service — build passed, uploading assets"` or `"blocked: auth test 401 on valid token — root cause unknown"`.
 
 ### Rolling window
 
-The journal keeps the 12 most recent completed tasks (configurable via `MEMENTO_MAX_ENTRIES`) plus up to 5 upcoming tasks. Older entries are folded into a one-line rolling summary. The journal file stays under 6KB and each journal injection costs under 400 tokens — negligible against a 200k context window. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
+The journal keeps the 6 most recent done entries (configurable via `MEMENTO_MAX_ENTRIES`) plus up to 3 plan items. Older entries are folded into a rolling summary that preserves both task names and causal context. The journal file stays under 6KB and each journal injection costs under 350 tokens — negligible against a 200k context window. See [docs/session-validation.md](docs/session-validation.md) for real-session measurements.
 
 ### Entry format
 
 Entries are compressed (articles and filler dropped) to minimize token cost. Technical terms, numbers, file paths, and error strings are preserved exactly.
 
 ```
-Done: fix auth middleware -> PASETO impl, expiry corrected | ctx: user said "auth is broken before deploy"
-Done: analyze pricing -> 3 gaps, margins off 12% | ctx: pricing_check.py showed negative margin on SKU-47
-Next: pricing decision | deploy auth fix
+Done: fix auth middleware -> PASETO impl, expiry corrected | ctx: user: auth is broken before deploy
+Done: analyze pricing -> 3 gaps, margins off 12% | ctx: note: margin loss on SKU-47 means Q3 launch must hold until pricing revised
+Plan: pricing decision | deploy auth fix
 ```
 
 ## What Memento Does Not Replace
@@ -176,13 +172,13 @@ Memento fills the gap between three existing layers:
 | Conversation history | Full dialogue | Survives compaction where this does not |
 
 **When to use each layer:**
-- **Memento**: task-level recovery within focused work sessions — what happened in the last 12 tasks and why. Automatic.
+- **Memento**: intent and causal context within focused work sessions — goals, constraints, done entries with causal reasoning. Automatic.
 - **MEMORY.md**: system state, active process ownership, multi-week project checkpoints, anything with a natural expiry. Requires manual upkeep.
 - **CLAUDE.md**: permanent architecture decisions, API facts, code patterns — anything that should be true across every future session regardless of mission. Requires manual upkeep.
 
 ## Mission Tracking
 
-Memento infers the current mission from your first substantive request and tags all entries to it. The mission is a single sentence: what will exist or be decided when the work is done.
+Memento captures the mission from your first substantive request — close to verbatim, including constraints and definition of done: `"fix auth pipeline -- don't change token format -- done when: tests pass + staging health check green"`.
 
 The mission closes automatically when you run `/clear`, change projects, or explicitly say you are switching to something different.
 
@@ -218,7 +214,7 @@ All settings are optional. Memento works out of the box with no configuration.
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
 | `MEMENTO_INSTANCE_TAG` | OS username | Override journal filename — use when two Claude windows share an OS user, or multiple users share a machine account |
-| `MEMENTO_MAX_ENTRIES` | `12` | Maximum completed entries to keep (range 4–24). Higher values improve recovery for long sessions at negligible token cost. |
+| `MEMENTO_MAX_ENTRIES` | `6` | Maximum done entries to keep (range 4–24). Higher values improve recovery for long sessions at negligible token cost. |
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
 | `MEMENTO_STALE_DAYS` | `7` | Days before a closed mission's entries collapse into a summary. Active missions use 2× this threshold. |
 | `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>.debug.json` — records every write, prune, injection, and mission lifecycle event for post-session forensics |
@@ -226,6 +222,20 @@ All settings are optional. Memento works out of the box with no configuration.
 Note: `MEMENTO_PROJECT_TAG` does not exist. The project field in the journal is auto-detected from the git repo name and needs no override.
 
 **Shared accounts**: If multiple users or Claude windows share the same OS user account, set a unique `MEMENTO_INSTANCE_TAG` per instance to prevent journal collisions (e.g. `MEMENTO_INSTANCE_TAG=alice` and `MEMENTO_INSTANCE_TAG=bob`).
+
+## Upgrading from v0.1.x
+
+v0.2.0 renames several journal fields. **No migration needed** — old journals are read transparently and normalized to new names on the next journal write.
+
+| Old field | New field | Notes |
+|-----------|-----------|-------|
+| `completed[]` | `done[]` | Same entries, renamed |
+| `upcoming[]` | `plan[]` | Same items, renamed |
+| `in_progress.progress` | `wip` | Flattened to a plain string |
+| `task` (in entry) | `act` | Same value, renamed |
+| `state` / `state_reason` | (dropped) | Fold blocker info into `wip` string |
+
+Old journals continue to inject correctly. On the first time Claude writes the journal after upgrading, it will adopt the new field names automatically.
 
 ## Contributing
 

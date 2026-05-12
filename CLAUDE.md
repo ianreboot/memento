@@ -64,20 +64,20 @@ State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.json`
 
 ```json
 {
-  "mission":        "one sentence — current goal",
+  "mission":        "user's request + constraints + done-when (max 400 chars — verbatim, not rewritten)",
   "mission_opened": "ISO timestamp",
   "mission_closed": "ISO timestamp or null",
   "project":        "project-tag",
   "summary":        "rolling summary of pruned entries (max 300 chars) or null",
-  "state":          "active | blocked | waiting",
-  "state_reason":   "string or null (max 120 chars)",
-  "in_progress":    "{ task, started, progress } or null",
-  "completed": [
-    { "task": "string (80ch)", "result": "string (120ch)", "ctx": "string (120ch)", "ts": "ISO" }
+  "wip":            "mid-task state or blocker string, null if none (max 150 chars)",
+  "done": [
+    { "act": "string (80ch)", "result": "string (120ch)", "ctx": "string (120ch)", "ts": "ISO" }
   ],
-  "upcoming": ["task name", "task name"]
+  "plan": ["next step with causal anchor (150ch max)", "..."]
 }
 ```
+
+**Backward compat**: old journals use `completed`/`upcoming`/`task`/`in_progress`/`state`/`state_reason`. These are read transparently and normalized to new names on next write. No migration needed.
 
 ## Design Principles
 
@@ -94,11 +94,11 @@ State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.json`
 
 | Parameter | Value | Override |
 |-----------|-------|---------|
-| Max completed entries | 8 | — |
-| Max upcoming entries | 5 | — |
+| Max done entries | 6 | `MEMENTO_MAX_ENTRIES` (range 4–24) |
+| Max plan items | 3 | — |
 | Summary max chars | 300 | — |
 | Journal file size cap | 6KB | `MEMENTO_MAX_FILE_KB` |
-| Staleness threshold | 7 days | `MEMENTO_STALE_DAYS` |
+| Staleness threshold | 7 days (active: 14d) | `MEMENTO_STALE_DAYS` |
 | Instance tag override | (OS username) | `MEMENTO_INSTANCE_TAG` |
 
 ## Key Rules for Contributors

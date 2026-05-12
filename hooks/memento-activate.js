@@ -149,7 +149,7 @@ function run(rawInput) {
   const output = formatJournalForInjection(journal, mode, journalPath, projectTag);
 
   if (DEBUG) {
-    const completedCount = (Array.isArray(journal.completed) ? journal.completed : []).filter(Boolean).length;
+    const completedCount = (Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : [])).filter(Boolean).length;
     appendDebugEvents(journalPath, [{
       type: 'injection',
       data: {

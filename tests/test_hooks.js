@@ -48,6 +48,7 @@ function runHook(script, input, extraEnv = {}) {
 function writeTestJournal(dir, overrides = {}) {
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
+  // writeTestJournal intentionally uses OLD schema (completed/upcoming/task) to test backward-compat
   const journal = Object.assign({
     mission:        'test mission',
     mission_opened: new Date().toISOString(),
@@ -103,8 +104,8 @@ test('compact + journal: full mode (Done: and Next: present)', () => {
     writeTestJournal(dir);
     const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
     assert.strictEqual(r.status, 0);
-    assert.ok(r.stdout.includes('Done: completed task'), 'must include Done: line');
-    assert.ok(r.stdout.includes('Next: next step'), 'must include Next: line');
+    assert.ok(r.stdout.includes('Done: completed task'), 'must include Done: line (backward-compat from task field)');
+    assert.ok(r.stdout.includes('Plan: next step'), 'must include Plan: line (backward-compat from upcoming field)');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }
@@ -169,7 +170,7 @@ test('/clear + journal: sets mission_closed + clears upcoming', () => {
     runHook('memento-tracker.js', '{"prompt":"/clear"}', { CLAUDE_CONFIG_DIR: dir });
     const updated = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
     assert.ok(updated.mission_closed, 'mission_closed must be set after /clear');
-    assert.strictEqual(updated.upcoming.length, 0, 'upcoming must be cleared after /clear');
+    assert.strictEqual(updated.plan.length, 0, 'plan must be cleared after /clear');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }
@@ -190,14 +191,18 @@ test('active mission: emits hookSpecificOutput reminder', () => {
   }
 });
 
-test('closed mission: no reminder emitted', () => {
+test('closed mission: emits prior-mission-closed reminder', () => {
   const dir = tmpDir();
   try {
     const closedAt = new Date().toISOString();
     writeTestJournal(dir, { mission_closed: closedAt });
     const r = runHook('memento-tracker.js', '{"prompt":"some prompt"}', { CLAUDE_CONFIG_DIR: dir });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout.trim(), '', 'closed mission must not emit reminder');
+    const out = JSON.parse(r.stdout.trim());
+    assert.ok(
+      out.hookSpecificOutput.additionalContext.includes('Prior mission closed'),
+      'closed mission must emit prior-mission-closed reminder'
+    );
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

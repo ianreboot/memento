@@ -151,7 +151,9 @@ function run(rawInput) {
       } else if (lastEntry) {
         detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
       } else {
-        detail = '';
+        // No entries and no wip — session is completely unprotected against compaction.
+        // Escalate the reminder so Claude captures intent before any task runs.
+        detail = ' | no entries yet — open mission is unprotected, write journal now';
       }
 
       const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal when information that compaction would destroy changes.`;

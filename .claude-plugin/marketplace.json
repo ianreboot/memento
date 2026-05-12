@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "memento",
-      "description": "Maintains a rolling journal of completed tasks, their results, and causal context so Claude can recover mid-task after context compaction without human intervention. Always active. Invisible to user.",
-      "version": "0.1.0",
+      "description": "Preserves intent across context compaction — captures the why behind your work so Claude makes correct decisions after context loss, not just resumes the right task. Always active. Invisible to user.",
+      "version": "0.2.0",
       "author": {
         "name": "ianreboot",
         "url": "https://github.com/ianreboot/memento"

@@ -1,7 +1,7 @@
 {
   "name": "memento",
-  "version": "0.1.0",
-  "description": "Persistent task memory across context compaction. Maintains a rolling journal of completed tasks, their results, and causal context — injected automatically at session start so Claude can recover mid-task without human intervention.",
+  "version": "0.2.0",
+  "description": "Preserves intent across context compaction — the why behind your work, not just the what. Captures mission constraints, causal reasoning, and decision context in a lightweight JSON journal. Injected automatically at session start; invisible to user.",
   "author": {
     "name": "ianreboot",
     "url": "https://github.com/ianreboot"

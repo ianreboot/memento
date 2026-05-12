@@ -95,7 +95,7 @@ All completed entries ever written, annotated with a `_debug` block:
 
 ```json
 {
-  "task": "fix auth middleware",
+  "act": "fix auth middleware",
   "result": "PASETO impl, expiry corrected",
   "ctx": "user: auth is broken before deploy",
   "ts": "2026-05-05T10:00:00.000Z",

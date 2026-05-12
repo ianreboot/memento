@@ -8,7 +8,7 @@ Memento has three components that work together:
 
 ### 1. The SKILL.md (`skills/memento/SKILL.md`)
 
-This is loaded into Claude's context whenever the skill triggers. It instructs Claude on:
+This is loaded into Claude's context at every session start (the skill is always active). It instructs Claude on:
 - When and how to write journal entries
 - The fidelity rule (only record what was stated or observed)
 - Entry format and compression

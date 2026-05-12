@@ -190,14 +190,18 @@ test('active mission: emits hookSpecificOutput reminder', () => {
   }
 });
 
-test('closed mission: no reminder emitted', () => {
+test('closed mission: emits prior-mission-closed reminder', () => {
   const dir = tmpDir();
   try {
     const closedAt = new Date().toISOString();
     writeTestJournal(dir, { mission_closed: closedAt });
     const r = runHook('memento-tracker.js', '{"prompt":"some prompt"}', { CLAUDE_CONFIG_DIR: dir });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout.trim(), '', 'closed mission must not emit reminder');
+    const out = JSON.parse(r.stdout.trim());
+    assert.ok(
+      out.hookSpecificOutput.additionalContext.includes('Prior mission closed'),
+      'closed mission must emit prior-mission-closed reminder'
+    );
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

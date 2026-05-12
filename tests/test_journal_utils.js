@@ -103,7 +103,7 @@ test('rolling window: summary stays within MAX_SUMMARY_CHARS', () => {
 
 test('stale collapse: clears completed + upcoming, sets mission_closed', () => {
   const j = newJournal('stale mission', 'staleproj');
-  const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(); // 10 days ago
+  const oldDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(); // 15 days ago (active missions collapse at STALE_DAYS*2=14d)
   j.completed = [{ task: 'old task', result: 'done', ts: oldDate }];
   j.upcoming  = ['pending thing'];
   const pruned = pruneJournal(j);

@@ -411,6 +411,14 @@ function applyFieldLimits(journal) {
     j.mission = j.mission.slice(0, FIELD_LIMITS.mission);
   }
 
+  // subject: Claude-managed field for what the work is actually about.
+  // Distinct from project (which reflects git context). null means "use project".
+  if (typeof j.subject === 'string') {
+    j.subject = j.subject.slice(0, FIELD_LIMITS.act); // reuse act limit (80 chars)
+  } else {
+    j.subject = null;
+  }
+
   // Normalize done entries (backward-compat: fall back to completed for old journals).
   // Write only the new 'done' field name — old 'completed' fades out on next write.
   const rawDone = Array.isArray(j.done) ? j.done : (Array.isArray(j.completed) ? j.completed : []);
@@ -653,9 +661,17 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
   // the detailed entries are irrelevant noise regardless of mission status.
   // Keep only the mission signal and a one-line summary so the recovering Claude
   // knows the previous context briefly before pivoting to the current project.
+  //
+  // subject field: Claude-managed, set when the work is about a different project
+  // than the current session (e.g., editing memento files during an AEO session).
+  // When subject is set, it takes precedence over project for relevance checks.
+  // When subject is null, fall through to the existing project-tag comparison.
+  const relevantProject = (typeof journal.subject === 'string' && journal.subject)
+    ? journal.subject
+    : journal.project;
   const crossProject = !!(projectTag && projectTag !== 'default'
-    && journal.project && journal.project !== 'default'
-    && journal.project !== projectTag);
+    && relevantProject && relevantProject !== 'default'
+    && relevantProject !== projectTag);
 
   // Defensive limits — cap what gets injected regardless of what's on disk
   const mission = (journal.mission || '[no mission set]').slice(0, FIELD_LIMITS.mission);
@@ -688,6 +704,12 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     const xpSummary = journal.summary || firstAct;
     if (xpSummary) lines.push(`Previous work (${journal.project}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
   } else {
+    // WIP first — a recovering Claude needs to know immediately if work was in progress.
+    // Showing wip before done entries means it is never obscured by a long task history.
+    if (wipStr) {
+      lines.push(`IN PROGRESS: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
+    }
+
     if (journal.summary) {
       lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
     }
@@ -702,11 +724,6 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
       if (result) line += ` -> ${result}`;
       if (ctx)    line += ` | ctx: ${ctx}`;
       lines.push(line);
-    }
-
-    // Show wip string between Done entries and Plan entries
-    if (wipStr) {
-      lines.push(`WIP: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
     }
 
     const planItems = plan.slice(0, MAX_UPCOMING).filter(Boolean);
@@ -759,6 +776,7 @@ function newJournal(mission, project) {
     mission_opened: new Date().toISOString(),
     mission_closed: null,
     project:        project || 'default',
+    subject:        null,           // what the work is about (Claude-set, overrides project for suppression)
     summary:        null,
     wip:            null,           // mid-task state or blocker string (max 150 chars)
     done:           [],             // completed entries: { act, result, ctx?, ts }

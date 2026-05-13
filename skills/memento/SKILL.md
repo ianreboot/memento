@@ -177,6 +177,26 @@ If none of these applies, **omit `ctx` entirely**. An absent ctx is honest. A fa
 { "act": "deploy auth service (attempt 2)", "result": "deployed to staging, health check passed", "ctx": "note: first attempt failed mid-upload; resumed from upload step", "ts": "..." }
 ```
 
+**Write ctx at the moment of discovery, not at task completion.** For debugging tasks, the reasoning is freshest when you find the root cause — not after you've applied and deployed the fix. By deployment, the "why" has become obvious and ctx shrinks to a label. Write the journal entry (or at minimum the ctx field) when you understand the problem, then update act/result when the fix ships.
+
+**The difference between a weak and strong entry:**
+
+Weak entry (common under time pressure):
+```json
+{ "act": "fix build timeout", "result": "increased timeout to 120s" }
+```
+A recovering Claude knows what changed but not why — and might revert it as a workaround or pick a different value.
+
+Strong entry:
+```json
+{
+  "act": "fix build timeout",
+  "result": "timeout 30s→120s in build config",
+  "ctx": "note: 30s was set before asset count grew 4×. 120s matches observed p95. Any value under 90s fails on full builds."
+}
+```
+The ctx tells a recovering Claude why the value is what it is, and that reducing it reintroduces the failure.
+
 ## What Counts as a Task
 
 A task is a discrete action that changes project state or produces something the user can act on.

@@ -101,6 +101,15 @@ State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.json`
 | Staleness threshold | 7 days (active: 14d) | `MEMENTO_STALE_DAYS` |
 | Instance tag override | (OS username) | `MEMENTO_INSTANCE_TAG` |
 
+## Testing
+
+**Run tests before every push — no exceptions:**
+```bash
+bash tests/run.sh
+```
+
+All 3 test files run automatically (`test_journal_utils.js`, `test_hooks.js`, `test_activate.js`). If any fail, fix before pushing. Do not push and wait for CI to surface failures that a local run would catch in seconds.
+
 ## Key Rules for Contributors
 
 - **Edit `skills/memento/SKILL.md`** for behavior changes. This is the single source of truth.

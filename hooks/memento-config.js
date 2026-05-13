@@ -702,7 +702,7 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     // Preserve only the mission-closed signal (already in the header) and a one-line summary.
     const firstAct = done.length > 0 ? (done[0].act || done[0].task || null) : null;
     const xpSummary = journal.summary || firstAct;
-    if (xpSummary) lines.push(`Previous work (${journal.project}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
+    if (xpSummary) lines.push(`Previous work (${relevantProject}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
   } else {
     // WIP first — a recovering Claude needs to know immediately if work was in progress.
     // Showing wip before done entries means it is never obscured by a long task history.

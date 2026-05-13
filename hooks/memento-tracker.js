@@ -143,11 +143,13 @@ function run(rawInput) {
       const isStale = !!(lastEntry && (Date.now() - lastEntryMs > STALE_REMINDER_MS));
 
       let detail;
-      if (isStale) {
+      if (wip) {
+        // wip takes priority over staleness: active tracked work is more informative
+        // than a stale warning, and the wip description implicitly shows recency.
+        detail = ` | IN PROGRESS: "${wip}"`;
+      } else if (isStale) {
         const mins = Math.round((Date.now() - lastEntryMs) / 60000);
         detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
-      } else if (wip) {
-        detail = ` | wip: "${wip}"`;
       } else if (lastEntry) {
         detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
       } else {
@@ -164,12 +166,13 @@ function run(rawInput) {
         },
       }));
     } else {
-      // Closed mission — prompt Claude to open a new one if this is new work.
+      // Closed mission — brief per-turn signal. The SessionStart hook already
+      // delivered the full closed-mission context at session start; repeating
+      // the full instruction every turn is unnecessary noise.
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          additionalContext: '[MEMENTO] Prior mission closed. If this is new work, open a new mission now — ' +
-            'write journal with mission_opened reset, mission_closed:null, done:[], plan:[first task].',
+          additionalContext: '[MEMENTO] Mission closed — open a new mission when ready.',
         },
       }));
     }

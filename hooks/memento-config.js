@@ -466,10 +466,11 @@ function applyFieldLimits(journal) {
 // Prune the journal to fit within rolling window constraints.
 //
 // Rules (applied in order):
-//   1. If completed.length > MAX_COMPLETED (8): fold oldest entry into summary
-//   2. If summary > MAX_SUMMARY_CHARS: trim from the start (keep recent context)
-//   3. Check staleness: if newest entry is > STALE_DAYS old, collapse all
+//   1. Check staleness: if newest entry is > STALE_DAYS old, collapse all
 //      completed entries into summary and clear the array (cross-session reset)
+//   2. Rolling window: if done.length > MAX_COMPLETED (6): fold oldest entry into
+//      summary; trim summary from the start if it exceeds MAX_SUMMARY_CHARS
+//   3. Cap plan array to MAX_UPCOMING items
 //
 // opts.debug: if true, returns { journal, debugEvents } instead of just the journal.
 // When opts is omitted, behaves exactly as before — backward-compatible.

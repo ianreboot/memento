@@ -711,7 +711,11 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
 
     const planItems = plan.slice(0, MAX_UPCOMING).filter(Boolean);
     if (planItems.length > 0) {
-      lines.push(`Plan: ${planItems.map(t => String(t).slice(0, 150)).join(' | ')}`);
+      const firstItem = String(planItems[0]).slice(0, 150);
+      const planStr = planItems.length === 1
+        ? firstItem
+        : `${firstItem} + ${planItems.length - 1} more`;
+      lines.push(`Plan: ${planStr}`);
     }
   }
 

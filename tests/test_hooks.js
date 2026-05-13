@@ -214,8 +214,8 @@ test('closed mission: emits prior-mission-closed reminder', () => {
     assert.strictEqual(r.status, 0);
     const out = JSON.parse(r.stdout.trim());
     assert.ok(
-      out.hookSpecificOutput.additionalContext.includes('Prior mission closed'),
-      'closed mission must emit prior-mission-closed reminder'
+      out.hookSpecificOutput.additionalContext.includes('Mission closed'),
+      'closed mission must emit mission-closed reminder'
     );
   } finally {
     fs.rmSync(dir, { recursive: true });

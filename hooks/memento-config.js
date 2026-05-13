@@ -707,7 +707,7 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     // WIP first — a recovering Claude needs to know immediately if work was in progress.
     // Showing wip before done entries means it is never obscured by a long task history.
     if (wipStr) {
-      lines.push(`IN PROGRESS: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
+      lines.push(`WIP: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
     }
 
     if (journal.summary) {

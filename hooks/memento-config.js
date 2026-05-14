@@ -405,16 +405,21 @@ function writeJournal(journalPath, data) {
   }
 }
 
+// Collapse newlines to spaces so injected text stays one line per field.
+function sanitizeLine(s) {
+  return s.replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+
 function applyFieldLimits(journal) {
   const j = Object.assign({}, journal);
   if (typeof j.mission === 'string') {
-    j.mission = j.mission.slice(0, FIELD_LIMITS.mission);
+    j.mission = sanitizeLine(j.mission.slice(0, FIELD_LIMITS.mission));
   }
 
   // subject: Claude-managed field for what the work is actually about.
   // Distinct from project (which reflects git context). null means "use project".
   if (typeof j.subject === 'string') {
-    j.subject = j.subject.slice(0, FIELD_LIMITS.act); // reuse act limit (80 chars)
+    j.subject = sanitizeLine(j.subject.slice(0, FIELD_LIMITS.act)); // reuse act limit (80 chars)
   } else {
     j.subject = null;
   }
@@ -426,11 +431,11 @@ function applyFieldLimits(journal) {
     // backward-compat: old entries use 'task', new entries use 'act'
     const act = typeof entry.act === 'string' ? entry.act : (typeof entry.task === 'string' ? entry.task : '');
     return {
-      act:    act.slice(0, FIELD_LIMITS.act),
-      result: typeof entry.result === 'string' ? entry.result.slice(0, FIELD_LIMITS.result) : '',
+      act:    sanitizeLine(act.slice(0, FIELD_LIMITS.act)),
+      result: sanitizeLine(typeof entry.result === 'string' ? entry.result.slice(0, FIELD_LIMITS.result) : ''),
       // C1: preserve absent ctx as absent — SKILL.md says "omit the field entirely" when unknown.
       // Coercing undefined→'' makes absent indistinguishable from empty, losing that signal.
-      ...(typeof entry.ctx === 'string' ? { ctx: entry.ctx.slice(0, FIELD_LIMITS.ctx) } : {}),
+      ...(typeof entry.ctx === 'string' ? { ctx: sanitizeLine(entry.ctx.slice(0, FIELD_LIMITS.ctx)) } : {}),
       ts:     typeof entry.ts === 'string' ? entry.ts : new Date().toISOString(),
     };
   });
@@ -438,16 +443,16 @@ function applyFieldLimits(journal) {
 
   // Normalize plan items (backward-compat: fall back to upcoming for old journals).
   const rawPlan = Array.isArray(j.plan) ? j.plan : (Array.isArray(j.upcoming) ? j.upcoming : []);
-  j.plan = rawPlan.filter(Boolean).slice(0, MAX_UPCOMING).map(t => String(t).slice(0, 150));
+  j.plan = rawPlan.filter(Boolean).slice(0, MAX_UPCOMING).map(t => sanitizeLine(String(t).slice(0, 150)));
   delete j.upcoming; // remove old field name
 
   // Normalize wip (backward-compat: extract from in_progress.progress for old journals).
   // wip is a plain string, not an object — fold blocker/state info directly into it.
   if (typeof j.wip === 'string') {
-    j.wip = j.wip.slice(0, FIELD_LIMITS.wip);
+    j.wip = sanitizeLine(j.wip.slice(0, FIELD_LIMITS.wip)) || null;
   } else if (j.wip == null) {
     if (j.in_progress && typeof j.in_progress.progress === 'string' && j.in_progress.progress) {
-      j.wip = j.in_progress.progress.slice(0, FIELD_LIMITS.wip);
+      j.wip = sanitizeLine(j.in_progress.progress.slice(0, FIELD_LIMITS.wip)) || null;
     } else {
       j.wip = null;
     }
@@ -461,7 +466,7 @@ function applyFieldLimits(journal) {
   delete j.state_reason;
 
   if (typeof j.summary === 'string') {
-    j.summary = j.summary.slice(0, MAX_SUMMARY_CHARS);
+    j.summary = sanitizeLine(j.summary.slice(0, MAX_SUMMARY_CHARS)) || null;
   }
 
   return j;

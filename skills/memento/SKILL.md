@@ -240,10 +240,15 @@ Priority: factual completeness over grammatical correctness. `"fix auth middlewa
 
 `wip` captures a task that started but hasn't completed — the exact scenario where compaction is most damaging.
 
-**Write the journal with `wip` set before you begin any task that will not complete in a single tool call.** This includes: multi-step sequences (build + deploy, multi-file refactor), launching an async agent and waiting for output, producing multiple output files, or any work where you know the next 2+ steps.
+**Write the journal with `wip` set before you begin any task that will not complete in a single tool call.** This includes:
+- Multi-step sequences (build + deploy, multi-file refactor)
+- **Subagent dispatch**: before calling Task()/Agent() and waiting — the gap between dispatch and return is a compaction window; without a wip entry the recovering Claude has no idea what was in flight
+- Producing multiple output files
+- Any work where you know the next 2+ steps
 
 ```json
 "wip": "deploy auth service — build passed, uploading assets"
+"wip": "fresh-eyes agent dispatched — reviewing auth.ts + db-query.js for security issues"
 ```
 
 Also use `wip` for blockers: `"blocked: auth test 401 on valid token — root cause unknown"`

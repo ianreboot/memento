@@ -209,6 +209,21 @@ rm ~/.claude/.memento/<username>.json
 ls ~/.claude/.memento/
 ```
 
+**To edit a journal directly:**
+
+Direct JSON edits are supported and intentional — they are the escape hatch when Claude writes something wrong and you want to fix it without waiting for Claude to correct itself.
+
+Common uses: correcting a mission string, trimming a verbose entry, clearing a stale `wip` that Claude forgot to null out, or seeding a new session with a mission before Claude has had a chance to write one.
+
+```bash
+# Edit in-place
+nano ~/.claude/.memento/<username>.json
+# or
+code ~/.claude/.memento/<username>.json
+```
+
+The only rules: keep it valid JSON, and avoid newlines inside string values (the injection formatter renders them as literal `\n`). The hook re-reads the file on every session start and every user prompt, so changes take effect immediately — no restart needed.
+
 ## Configuration
 
 All settings are optional. Memento works out of the box with no configuration.

@@ -53,7 +53,7 @@ function writeTestJournal(dir, overrides = {}) {
     mission:        'test mission',
     mission_opened: new Date().toISOString(),
     mission_closed: null,
-    project:        'testproj',
+    project:        'default',  // avoids triggering cross-project suppression in tests
     summary:        null,
     state:          'active',
     state_reason:   null,
@@ -305,6 +305,114 @@ test('sidecar: corrupt sidecar content — reminder fires (graceful degradation)
     assert.ok(r.stdout.length > 0, 'reminder must fire when sidecar is corrupt');
     const out = JSON.parse(r.stdout.trim());
     assert.ok(out.hookSpecificOutput.additionalContext.includes('Mission closed'), 'reminder must say Mission closed');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// stale-open-mission reminder cooldown
+// ---------------------------------------------------------------------------
+
+console.log('\nstale-reminder cooldown');
+
+test('stale-reminder: no sidecar — reminder fires and sidecar is created', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('journal may be stale'), 'stale reminder must fire when no sidecar');
+    assert.ok(fs.existsSync(staleRemindedPath), 'sidecar must be created after first fire');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: sidecar within cooldown — reminder suppressed', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    // Fire was 2 min ago — within 10-min cooldown
+    fs.writeFileSync(staleRemindedPath, new Date(Date.now() - 2 * 60 * 1000).toISOString(), { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('journal may be stale'), 'stale reminder must be suppressed within cooldown');
+    assert.ok(ctx.includes('[MEMENTO:'), 'normal reminder must still fire');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: sidecar expired — reminder re-fires and sidecar updated', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    // Fire was 15 min ago — past 10-min cooldown
+    const expiredFire = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    fs.writeFileSync(staleRemindedPath, expiredFire, { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('journal may be stale'), 'stale reminder must re-fire when sidecar expired');
+    const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
+    assert.ok(stored !== expiredFire, 'sidecar must be updated to a new timestamp');
+    assert.ok(!isNaN(new Date(stored).getTime()), 'sidecar must contain valid ISO timestamp');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: corrupt sidecar — reminder fires (graceful degradation)', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    fs.writeFileSync(staleRemindedPath, 'not-a-timestamp', { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('journal may be stale'), 'stale reminder must fire when sidecar is corrupt');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: fresh journal entry — isStale false, sidecar not consulted', () => {
+  const dir = tmpDir();
+  try {
+    // Default writeTestJournal writes ts=now — entry is fresh, not stale
+    const journalPath = writeTestJournal(dir);
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    // Sidecar exists but isStale is false — should be bypassed entirely
+    fs.writeFileSync(staleRemindedPath, new Date(Date.now() - 20 * 60 * 1000).toISOString(), { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('journal may be stale'), 'fresh journal must not show stale detail');
+    assert.ok(ctx.includes('[MEMENTO:'), 'normal reminder must still fire');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

@@ -148,8 +148,31 @@ function run(rawInput) {
         // than a stale warning, and the wip description implicitly shows recency.
         detail = ` | IN PROGRESS: "${wip}"`;
       } else if (isStale) {
-        const mins = Math.round((Date.now() - lastEntryMs) / 60000);
-        detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
+        // Stale reminder fires once per 10-minute window, then suppresses until
+        // the cooldown expires. Each hook invocation is a new process — a sidecar
+        // file persists the last-fired timestamp between invocations.
+        // When Claude writes a new entry the isStale flag becomes false naturally
+        // (lastEntry.ts is fresh), so the cooldown logic is bypassed entirely.
+        const STALE_COOLDOWN_MS = 10 * 60 * 1000;
+        const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+        let suppressStale = false;
+        try {
+          const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
+          const storedMs = new Date(stored).getTime();
+          if (!isNaN(storedMs) && (Date.now() - storedMs < STALE_COOLDOWN_MS)) {
+            suppressStale = true;
+          }
+        } catch (e) { /* missing or unreadable — fire the reminder */ }
+
+        if (!suppressStale) {
+          const mins = Math.round((Date.now() - lastEntryMs) / 60000);
+          detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
+          try {
+            fs.writeFileSync(staleRemindedPath, new Date().toISOString(), { mode: 0o600 });
+          } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
+        } else {
+          detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
+        }
       } else if (lastEntry) {
         detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
       } else {

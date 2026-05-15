@@ -166,15 +166,27 @@ function run(rawInput) {
         },
       }));
     } else {
-      // Closed mission — brief per-turn signal. The SessionStart hook already
-      // delivered the full closed-mission context at session start; repeating
-      // the full instruction every turn is unnecessary noise.
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: '[MEMENTO] Mission closed — open a new mission when ready.',
-        },
-      }));
+      // Closed mission — emit reminder once per mission closure, then suppress.
+      // Each hook invocation is a new process (no in-memory state persists).
+      // A sidecar file stores the mission_closed timestamp; matching = already reminded.
+      const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+      let alreadyReminded = false;
+      try {
+        const stored = fs.readFileSync(remindedPath, 'utf8').trim();
+        alreadyReminded = (stored === journal.mission_closed);
+      } catch (e) { /* file missing or unreadable — treat as not yet reminded */ }
+
+      if (!alreadyReminded) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: '[MEMENTO] Mission closed — open a new mission when ready.',
+          },
+        }));
+        try {
+          fs.writeFileSync(remindedPath, journal.mission_closed, { mode: 0o600 });
+        } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
+      }
     }
   }
 

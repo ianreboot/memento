@@ -19,7 +19,7 @@ The journal is a small JSON file on disk. Claude writes it. Hooks read and injec
 
 Write the journal when information changes that compaction would destroy:
 
-1. **Mission opens** — capture mission (request + constraints + done-when) immediately
+1. **Mission opens** — capture mission (request + constraints + done-when) immediately. In the same write: if `proj:` in the `[MEMENTO]` header does not match the project the work is actually about, set `subject` to the correct project name. If `done` is empty and `wip` is null, also write a session start checkpoint (see Recovery section step 0).
 2. **A result changes the decision landscape** — add a `done` entry with `ctx: note: X means we should Y`
 3. **User pivots or adds constraints** — update the `mission` field
 4. **Multi-step task begins** — set `wip` before the first tool call
@@ -64,13 +64,22 @@ The `proj:` field in the header shows the current project detected from git — 
 
 If no `[MEMENTO]` header appears (hook failure), the path is `~/.claude/.memento/<username>.json`. Create the `.memento/` directory first if it does not exist (`mkdir -p` via Bash).
 
-## Journal `project` Field
+## Journal `project` and `subject` Fields
 
-The `project` field tracks what's being worked on right now — not the journal file name. Update it when you switch projects:
+`project` is set automatically by the hook from the git repo name. It reflects where Claude is running, not necessarily what the work is about. Do not set `project` manually — the hook keeps it current.
+
+`subject` is set by Claude when the work is about a different project than the current session context. It takes precedence over `project` for cross-project suppression.
+
+**You must set `subject` at mission-open time** when the work is about a different project than `proj:` in the `[MEMENTO]` header. Do not wait until the work is underway — set it in the same write as `mission_opened`. If you recover from compaction and see `proj:` does not match the work's subject and `subject` is null, set it now.
+
+Example: you are in an AEO consulting session (`project: aeo`) and the user asks you to audit the memento skill files. Set `subject: "memento"`. The next AEO session will then correctly suppress this mission rather than surfacing it as AEO work.
 
 ```json
-"project": "myapp"   // → "webapp" when you switch
+"project": "aeo",    // set by hook — where Claude is running
+"subject": "memento" // set by Claude — what the work is actually about
 ```
+
+If the work is genuinely about the current project, leave `subject: null`.
 
 When switching projects, also open a new mission (new `mission_opened`, clear `mission_closed`, reset `done`/`plan`). Keep `summary` as historical context if relevant.
 
@@ -83,7 +92,8 @@ If the header shows `proj:default`, update the `project` field to the name of th
   "mission":        "user's request + constraints + done-when (max 400 chars — verbatim, not rewritten)",
   "mission_opened": "ISO 8601 timestamp",
   "mission_closed": "ISO 8601 timestamp or null",
-  "project":        "string — project tag (from hook header)",
+  "project":        "string — git repo name, set by hook (do not set manually)",
+  "subject":        "string or null — what the work is about (set by Claude when it differs from project)",
   "summary":        "string or null — rolling summary of pruned entries (max 300 chars)",
   "wip":            "string or null — mid-task state or blocker (max 150 chars)",
   "done": [
@@ -284,6 +294,12 @@ The hook handles staleness automatically at session start using a two-tier model
 ## Recovery After Compaction
 
 When you see the `[MEMENTO]` header injected into your context after compaction, orient immediately:
+
+0. **Session start checkpoint** — if `mission_closed` is null, `done` has no entries, and `wip` is null, write this entry immediately before any other action:
+   ```json
+   { "act": "session start checkpoint", "result": "open mission, no prior done entries", "ts": "<now>" }
+   ```
+   This applies on both recovery and fresh sessions. An open mission with no entries is unprotected — the next compaction erases all context. Skip this step if `done` has entries or `wip` is set.
 
 1. Check `mission_closed` — if set, the previous mission is finished. Do not execute its `plan` items. Wait for the user's next request and start a fresh mission.
 2. Check `wip` — if set, verify its current state before doing anything else (re-run the test, check if the file changed, ping the endpoint)

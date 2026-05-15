@@ -214,9 +214,97 @@ test('closed mission: emits prior-mission-closed reminder', () => {
     assert.strictEqual(r.status, 0);
     const out = JSON.parse(r.stdout.trim());
     assert.ok(
-      out.hookSpecificOutput.additionalContext.includes('Prior mission closed'),
-      'closed mission must emit prior-mission-closed reminder'
+      out.hookSpecificOutput.additionalContext.includes('Mission closed'),
+      'closed mission must emit mission-closed reminder'
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// S4: closed-mission sidecar reminder cooldown
+// ---------------------------------------------------------------------------
+
+console.log('\nS4: closed-mission sidecar cooldown');
+
+test('sidecar: no sidecar — reminder fires and sidecar is created', () => {
+  const dir = tmpDir();
+  try {
+    const closedAt = new Date().toISOString();
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt });
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+
+    const r = runHook('memento-tracker.js', '{"prompt":"some prompt"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.length > 0, 'reminder must fire when no sidecar exists');
+    const out = JSON.parse(r.stdout.trim());
+    assert.ok(out.hookSpecificOutput.additionalContext.includes('Mission closed'), 'reminder must say Mission closed');
+
+    const stored = fs.readFileSync(remindedPath, 'utf8').trim();
+    assert.strictEqual(stored, closedAt, 'sidecar must contain mission_closed timestamp');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('sidecar: sidecar matches mission_closed — reminder suppressed', () => {
+  const dir = tmpDir();
+  try {
+    const closedAt = new Date().toISOString();
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt });
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+
+    // Pre-write matching sidecar
+    fs.writeFileSync(remindedPath, closedAt, { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"another prompt"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'reminder must be suppressed when sidecar matches');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('sidecar: sidecar has stale timestamp — reminder re-fires and sidecar updated', () => {
+  const dir = tmpDir();
+  try {
+    const closedAt = new Date().toISOString();
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt });
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+
+    // Write a different (stale) timestamp to the sidecar
+    const staleTs = new Date(Date.now() - 86400000).toISOString();
+    fs.writeFileSync(remindedPath, staleTs, { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"some prompt"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.length > 0, 'reminder must re-fire when sidecar timestamp is stale');
+    const out = JSON.parse(r.stdout.trim());
+    assert.ok(out.hookSpecificOutput.additionalContext.includes('Mission closed'), 'reminder must say Mission closed');
+
+    const stored = fs.readFileSync(remindedPath, 'utf8').trim();
+    assert.strictEqual(stored, closedAt, 'sidecar must be updated to current mission_closed timestamp');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('sidecar: corrupt sidecar content — reminder fires (graceful degradation)', () => {
+  const dir = tmpDir();
+  try {
+    const closedAt = new Date().toISOString();
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt });
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+
+    // Write garbage to sidecar
+    fs.writeFileSync(remindedPath, 'not-a-valid-timestamp-at-all', { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"some prompt"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.length > 0, 'reminder must fire when sidecar is corrupt');
+    const out = JSON.parse(r.stdout.trim());
+    assert.ok(out.hookSpecificOutput.additionalContext.includes('Mission closed'), 'reminder must say Mission closed');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

@@ -405,10 +405,23 @@ function writeJournal(journalPath, data) {
   }
 }
 
+// Collapse newlines to spaces so injected text stays one line per field.
+function sanitizeLine(s) {
+  return s.replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+
 function applyFieldLimits(journal) {
   const j = Object.assign({}, journal);
   if (typeof j.mission === 'string') {
-    j.mission = j.mission.slice(0, FIELD_LIMITS.mission);
+    j.mission = sanitizeLine(j.mission.slice(0, FIELD_LIMITS.mission));
+  }
+
+  // subject: Claude-managed field for what the work is actually about.
+  // Distinct from project (which reflects git context). null means "use project".
+  if (typeof j.subject === 'string') {
+    j.subject = sanitizeLine(j.subject.slice(0, FIELD_LIMITS.act)); // reuse act limit (80 chars)
+  } else {
+    j.subject = null;
   }
 
   // Normalize done entries (backward-compat: fall back to completed for old journals).
@@ -418,11 +431,11 @@ function applyFieldLimits(journal) {
     // backward-compat: old entries use 'task', new entries use 'act'
     const act = typeof entry.act === 'string' ? entry.act : (typeof entry.task === 'string' ? entry.task : '');
     return {
-      act:    act.slice(0, FIELD_LIMITS.act),
-      result: typeof entry.result === 'string' ? entry.result.slice(0, FIELD_LIMITS.result) : '',
+      act:    sanitizeLine(act.slice(0, FIELD_LIMITS.act)),
+      result: sanitizeLine(typeof entry.result === 'string' ? entry.result.slice(0, FIELD_LIMITS.result) : ''),
       // C1: preserve absent ctx as absent — SKILL.md says "omit the field entirely" when unknown.
       // Coercing undefined→'' makes absent indistinguishable from empty, losing that signal.
-      ...(typeof entry.ctx === 'string' ? { ctx: entry.ctx.slice(0, FIELD_LIMITS.ctx) } : {}),
+      ...(typeof entry.ctx === 'string' ? { ctx: sanitizeLine(entry.ctx.slice(0, FIELD_LIMITS.ctx)) } : {}),
       ts:     typeof entry.ts === 'string' ? entry.ts : new Date().toISOString(),
     };
   });
@@ -430,16 +443,16 @@ function applyFieldLimits(journal) {
 
   // Normalize plan items (backward-compat: fall back to upcoming for old journals).
   const rawPlan = Array.isArray(j.plan) ? j.plan : (Array.isArray(j.upcoming) ? j.upcoming : []);
-  j.plan = rawPlan.filter(Boolean).slice(0, MAX_UPCOMING).map(t => String(t).slice(0, 150));
+  j.plan = rawPlan.filter(Boolean).slice(0, MAX_UPCOMING).map(t => sanitizeLine(String(t).slice(0, 150)));
   delete j.upcoming; // remove old field name
 
   // Normalize wip (backward-compat: extract from in_progress.progress for old journals).
   // wip is a plain string, not an object — fold blocker/state info directly into it.
   if (typeof j.wip === 'string') {
-    j.wip = j.wip.slice(0, FIELD_LIMITS.wip);
+    j.wip = sanitizeLine(j.wip.slice(0, FIELD_LIMITS.wip)) || null;
   } else if (j.wip == null) {
     if (j.in_progress && typeof j.in_progress.progress === 'string' && j.in_progress.progress) {
-      j.wip = j.in_progress.progress.slice(0, FIELD_LIMITS.wip);
+      j.wip = sanitizeLine(j.in_progress.progress.slice(0, FIELD_LIMITS.wip)) || null;
     } else {
       j.wip = null;
     }
@@ -453,7 +466,7 @@ function applyFieldLimits(journal) {
   delete j.state_reason;
 
   if (typeof j.summary === 'string') {
-    j.summary = j.summary.slice(0, MAX_SUMMARY_CHARS);
+    j.summary = sanitizeLine(j.summary.slice(0, MAX_SUMMARY_CHARS)) || null;
   }
 
   return j;
@@ -653,9 +666,17 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
   // the detailed entries are irrelevant noise regardless of mission status.
   // Keep only the mission signal and a one-line summary so the recovering Claude
   // knows the previous context briefly before pivoting to the current project.
+  //
+  // subject field: Claude-managed, set when the work is about a different project
+  // than the current session (e.g., editing memento files during an AEO session).
+  // When subject is set, it takes precedence over project for relevance checks.
+  // When subject is null, fall through to the existing project-tag comparison.
+  const relevantProject = (typeof journal.subject === 'string' && journal.subject)
+    ? journal.subject
+    : journal.project;
   const crossProject = !!(projectTag && projectTag !== 'default'
-    && journal.project && journal.project !== 'default'
-    && journal.project !== projectTag);
+    && relevantProject && relevantProject !== 'default'
+    && relevantProject !== projectTag);
 
   // Defensive limits — cap what gets injected regardless of what's on disk
   const mission = (journal.mission || '[no mission set]').slice(0, FIELD_LIMITS.mission);
@@ -686,8 +707,14 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     // Preserve only the mission-closed signal (already in the header) and a one-line summary.
     const firstAct = done.length > 0 ? (done[0].act || done[0].task || null) : null;
     const xpSummary = journal.summary || firstAct;
-    if (xpSummary) lines.push(`Previous work (${journal.project}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
+    if (xpSummary) lines.push(`Previous work (${relevantProject}): ${String(xpSummary).slice(0, MAX_SUMMARY_CHARS)}`);
   } else {
+    // WIP first — a recovering Claude needs to know immediately if work was in progress.
+    // Showing wip before done entries means it is never obscured by a long task history.
+    if (wipStr) {
+      lines.push(`WIP: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
+    }
+
     if (journal.summary) {
       lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
     }
@@ -702,11 +729,6 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
       if (result) line += ` -> ${result}`;
       if (ctx)    line += ` | ctx: ${ctx}`;
       lines.push(line);
-    }
-
-    // Show wip string between Done entries and Plan entries
-    if (wipStr) {
-      lines.push(`WIP: ${String(wipStr).slice(0, FIELD_LIMITS.wip)}`);
     }
 
     const planItems = plan.slice(0, MAX_UPCOMING).filter(Boolean);
@@ -759,6 +781,7 @@ function newJournal(mission, project) {
     mission_opened: new Date().toISOString(),
     mission_closed: null,
     project:        project || 'default',
+    subject:        null,           // what the work is about (Claude-set, overrides project for suppression)
     summary:        null,
     wip:            null,           // mid-task state or blocker string (max 150 chars)
     done:           [],             // completed entries: { act, result, ctx?, ts }

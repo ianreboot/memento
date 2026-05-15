@@ -391,6 +391,72 @@ test('readJournal returns null when mission field is missing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Newline sanitization (S3)
+// ---------------------------------------------------------------------------
+
+console.log('\nnewline sanitization');
+
+test('writeJournal: summary with embedded newline is stored without newline', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'test.json');
+    const j = newJournal('sanitize test', 'test');
+    j.summary = 'line one\nline two';
+    writeJournal(journalPath, j);
+    const loaded = readJournal(journalPath);
+    assert.ok(loaded.summary && !loaded.summary.includes('\n'), 'summary must not contain newline after write');
+    assert.ok(loaded.summary.includes('line one') && loaded.summary.includes('line two'), 'both parts must survive');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('writeJournal: wip with embedded newline is stored without newline', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'test.json');
+    const j = newJournal('sanitize wip test', 'test');
+    j.wip = 'step one\nstep two';
+    writeJournal(journalPath, j);
+    const loaded = readJournal(journalPath);
+    assert.ok(loaded.wip && !loaded.wip.includes('\n'), 'wip must not contain newline after write');
+    assert.ok(loaded.wip.includes('step one') && loaded.wip.includes('step two'), 'both parts must survive');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('writeJournal: summary with only newlines is stored as null', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'test.json');
+    const j = newJournal('sanitize null test', 'test');
+    j.summary = '\n\n';
+    writeJournal(journalPath, j);
+    const loaded = readJournal(journalPath);
+    assert.strictEqual(loaded.summary, null, 'whitespace-only summary must be null after write');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('writeJournal: normal text fields pass through unchanged', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'test.json');
+    const j = newJournal('normal text test', 'test');
+    j.wip = 'deploy auth service — build passed, uploading assets';
+    j.summary = 'fixed auth, deployed to staging';
+    writeJournal(journalPath, j);
+    const loaded = readJournal(journalPath);
+    assert.strictEqual(loaded.wip, 'deploy auth service — build passed, uploading assets');
+    assert.strictEqual(loaded.summary, 'fixed auth, deployed to staging');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

@@ -150,20 +150,35 @@ echo "  Installed: $SKILLS_DIR/SKILL.md"
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
 
-MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
-  const fs   = require('fs');
-  const sp   = process.env.MEMENTO_SETTINGS;
-  const hd   = process.env.MEMENTO_HOOKS_DIR;
-  const s    = JSON.parse(fs.readFileSync(sp, 'utf8'));
+MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" MEMENTO_FORCE="$FORCE" node -e "
+  const fs    = require('fs');
+  const sp    = process.env.MEMENTO_SETTINGS;
+  const hd    = process.env.MEMENTO_HOOKS_DIR;
+  const force = process.env.MEMENTO_FORCE === '1';
+  const s     = JSON.parse(fs.readFileSync(sp, 'utf8'));
   if (!s.hooks) s.hooks = {};
+
+  // --force: strip all existing memento entries before re-wiring so that
+  // stale entries from a previous install (e.g., pointing to a different path)
+  // do not block the hasHook() guard and silently survive the upgrade.
+  if (force) {
+    for (const ev of ['SessionStart', 'UserPromptSubmit']) {
+      if (Array.isArray(s.hooks[ev])) {
+        s.hooks[ev] = s.hooks[ev].filter(e =>
+          !(e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')))
+        );
+      }
+    }
+  }
 
   const hasHook = (ev) =>
     Array.isArray(s.hooks[ev]) &&
     s.hooks[ev].some(e => e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')));
 
-  if (!s.hooks.SessionStart)    s.hooks.SessionStart    = [];
+  if (!s.hooks.SessionStart)     s.hooks.SessionStart    = [];
   if (!s.hooks.UserPromptSubmit) s.hooks.UserPromptSubmit = [];
 
+  let wired = false;
   if (!hasHook('SessionStart')) {
     s.hooks.SessionStart.push({ hooks: [{
       type: 'command',
@@ -171,6 +186,7 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
       timeout: 5000,
       statusMessage: 'Restoring task context...',
     }]});
+    wired = true;
   }
 
   if (!hasHook('UserPromptSubmit')) {
@@ -179,10 +195,11 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
       command: 'node \"' + hd + '/memento-tracker.js\"',
       timeout: 3000,
     }]});
+    wired = true;
   }
 
   fs.writeFileSync(sp, JSON.stringify(s, null, 2) + '\n');
-  console.log('  Hooks wired in settings.json (backup at settings.json.bak)');
+  if (wired) console.log('  Hooks wired in settings.json (backup at settings.json.bak)');
 "
 
 echo ""

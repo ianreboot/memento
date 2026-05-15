@@ -7,6 +7,11 @@
 - **S3 — newline sanitization**: Added `sanitizeLine()` helper in `memento-config.js`; applied to all string fields in `applyFieldLimits()` (`mission`, `subject`, `act`, `result`, `ctx`, `plan` items, `wip`, `summary`). Prevents embedded `\n` from breaking the line-per-field injection format. Whitespace-only values coerced to `null` on `wip` and `summary`.
 - **S4 — closed-mission reminder cooldown**: Replaced every-turn reminder for closed missions with a sidecar file approach (`<instance>.reminded`). Reminder fires once per mission closure (first turn after close), then suppresses. Self-healing: corrupted sidecar re-fires; new mission closure (different timestamp) invalidates automatically.
 
+## v0.2.2 — 2026-05-13
+
+- **subject field**: New optional journal field (`subject`, max 80 chars) lets Claude separate where it is running (`project`, git-derived) from what the work is actually about. Cross-project suppression now uses `subject` when set, preventing mission details from injecting into unrelated project sessions. The `Previous work` label also uses `subject` so suppressed entries are correctly attributed.
+- **wip position in full injection**: Post-compaction recovery injection now shows `WIP:` immediately after the mission header, before done entries. A recovering Claude sees active work before task history.
+
 ## v0.1.0 — 2026-05-05
 
 Initial public release.

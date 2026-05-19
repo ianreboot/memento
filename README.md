@@ -184,6 +184,8 @@ Memento captures the mission from your first substantive request — close to ve
 
 The mission closes automatically when you run `/clear`, change projects, or explicitly say you are switching to something different.
 
+**One mission at a time.** Memento tracks a single active mission per journal. If you have a closed mission and start new work without opening a fresh one, the journal is in a no-mission state. During this gap, Claude can still write bare `wip` entries to capture in-flight work — full mission tracking resumes when the next mission opens. For sessions where you move between unrelated tasks in rapid succession, the pattern is: complete and close one mission, then let Claude open the next from your first substantive request.
+
 ## Privacy and Data
 
 **What is stored:** Task names, results, and the context (your words or tool output) that explains why each task was needed. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>.json`.

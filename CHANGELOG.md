@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.4 — 2026-05-19
+
+- **C1 — closed-mission injection suppression**: `formatJournalForInjection` now returns a minimal one-liner for closed missions in brief mode (`[MEMENTO] No active mission | proj:... | path:...`) and a 1-2 line header with summary in full (recovery) mode. Previous behavior injected full done/plan/wip for closed missions — irrelevant noise on 100% of post-close sessions.
+- **C2 — stale-open-mission reminder cooldown**: `memento-tracker.js` stale-reminder branch now uses a 10-minute cooldown sidecar (`.stale-reminded`). First stale turn fires the escalated reminder; subsequent turns within the window suppress to a normal brief reminder. Cooldown resets automatically when Claude writes a new entry. Mirrors the closed-mission sidecar mechanism from S4.
+- **C3 — post-install verification**: `install.sh` now runs a path-check node script after wiring, confirming that `settings.json` hook commands reference `$HOOKS_DIR`. Reports `ok`/`FAIL` per hook and suggests `--force` if wiring looks wrong. Warn-only; does not fail the install.
+- **C4 — SKILL.md behavioral rules**: Added trigger #7 (no-mission work: bare wip write before significant work when `mission_closed` is set) and an infrastructure-change callout (env vars, cloud config, DB records, deployed secrets must always be journaled, regardless of mission state).
+
 ## v0.2.3 — 2026-05-14
 
 - **S1 — recovery anchor write trigger**: Added step 0 to Recovery After Compaction section: when `mission_closed` is null, `done` is empty, and `wip` is null, Claude writes a session start checkpoint entry immediately. Protects open missions from losing all context on the next compaction.

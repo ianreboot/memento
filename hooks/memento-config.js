@@ -685,6 +685,22 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
 
   const closedMark = journal.mission_closed ? ' (CLOSED)' : '';
 
+  // Closed-mission suppression: when mission_closed is set, the previous work
+  // is finished. Brief mode gets a minimal "no active mission" signal; full mode
+  // (post-compaction recovery) retains the mission name and summary for orientation
+  // but drops done entries, wip, and plan items — they are historical noise.
+  if (journal.mission_closed) {
+    if (mode === 'brief') {
+      return `[MEMENTO] No active mission | proj:${project}${pathHint}`;
+    }
+    // Full mode: mission name + closed signal + summary only
+    const lines = [`[MEMENTO] Mission: ${mission} (CLOSED) | proj:${project}${pathHint}`];
+    if (journal.summary) {
+      lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
+    }
+    return lines.join('\n');
+  }
+
   // Backward-compat reads for renamed fields
   const done   = Array.isArray(journal.done)  ? journal.done  : (Array.isArray(journal.completed) ? journal.completed : []);
   const plan   = Array.isArray(journal.plan)  ? journal.plan  : (Array.isArray(journal.upcoming)  ? journal.upcoming  : []);

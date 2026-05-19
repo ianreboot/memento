@@ -202,6 +202,31 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" MEMENTO_FORCE="$FORC
   if (wired) console.log('  Hooks wired in settings.json (backup at settings.json.bak)');
 "
 
+# Post-install verification: confirm settings.json hook commands point to installed path.
+# This catches the upgrade scenario where stale paths survive the wiring step.
+echo ""
+echo "Verifying installation..."
+MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
+  const fs = require('fs');
+  const s = JSON.parse(fs.readFileSync(process.env.MEMENTO_SETTINGS, 'utf8'));
+  const hd = process.env.MEMENTO_HOOKS_DIR;
+  const check = (ev) =>
+    Array.isArray(s.hooks && s.hooks[ev]) &&
+    s.hooks[ev].some(e => e.hooks && e.hooks.some(h =>
+      h.command && h.command.includes('memento') && h.command.includes(hd)
+    ));
+  const ss = check('SessionStart');
+  const up = check('UserPromptSubmit');
+  console.log('  ' + (ss ? 'ok' : 'FAIL') + '  SessionStart      -> ' + hd);
+  console.log('  ' + (up ? 'ok' : 'FAIL') + '  UserPromptSubmit  -> ' + hd);
+  if (!ss || !up) {
+    console.log('');
+    console.log('  Hook wiring may be incorrect.');
+    console.log('  Try: bash hooks/install.sh --force');
+    process.exit(1);
+  }
+" 2>/dev/null || true
+
 echo ""
 echo "Done. Restart Claude Code to activate memento."
 echo ""

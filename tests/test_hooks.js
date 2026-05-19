@@ -481,6 +481,41 @@ test('true positive: "starting over from scratch" closes mission', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C1: closed-mission injection suppression (SessionStart)
+// ---------------------------------------------------------------------------
+
+console.log('\nC1: closed-mission injection suppression');
+
+test('startup + closed journal: brief mode emits No active mission', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { mission_closed: new Date().toISOString() });
+    const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes('No active mission'), 'closed mission at startup must say No active mission');
+    assert.ok(!r.stdout.includes('task(s) done'), 'closed mission at startup must NOT include done count');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('compact + closed journal: full mode shows CLOSED, no Done: lines', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, {
+      mission_closed: new Date().toISOString(),
+      done: [{ act: 'old task', result: 'done', ts: new Date().toISOString() }],
+    });
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes('(CLOSED)'), 'closed mission at recovery must show CLOSED marker');
+    assert.ok(!r.stdout.includes('Done:'), 'closed mission at recovery must NOT include Done: lines');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

@@ -27,7 +27,15 @@
 
 ---
 
-Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Unlike memory tools that require Claude to query a store, memento *pushes* context automatically — so even a just-compacted Claude recovers without knowing it needs to ask. Install takes 10 seconds, adds ~350 tokens at session recovery (plus ~50 tokens per message during active work), and runs invisibly in the background.
+Two scenarios where memento pays off concretely:
+
+**Mid-task crash recovery.** When compaction fires mid-task — before any summary exists — the native summary is empty and Claude has no idea where it was. Memento's `wip` field captures exactly what was in flight, so the recovering Claude can verify and resume rather than restart from scratch.
+
+**Multi-session institutional memory.** After many compactions, native summaries only know what happened in the last session. Memento's `done[]` journal persists decision history, rejected alternatives, and constraint rationale across every compaction boundary — the *why* behind choices that a recovering Claude needs to make the same decisions you made.
+
+For short sessions within a single compaction window, Claude Code's native compaction summary is often sufficient. Memento's value compounds across multiple compaction events and deep sessions.
+
+Unlike memory tools that require Claude to query a store, memento *pushes* context automatically — so even a just-compacted Claude recovers without knowing it needs to ask. Install takes 10 seconds, adds ~350 tokens at session recovery (plus ~50 tokens per message during active work), and runs invisibly in the background.
 
 ## The Problem
 

@@ -123,9 +123,11 @@ function run(rawInput) {
     process.exit(0);
   }
 
-  if (journal && journal.mission) {
+  // Feature C: emit reminder when mission is active OR when wip is set without a mission
+  // (bare wip journals — trigger #7 — have no mission string but still need attention).
+  if (journal && (journal.mission || journal.wip)) {
     if (!journal.mission_closed) {
-      // Active mission — sync project tag, then emit staleness-aware reminder.
+      // Active mission (or bare wip) — sync project tag, then emit staleness-aware reminder.
       if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
         journal.project = projectTag;
         writeJournal(journalPath, journal);
@@ -134,6 +136,19 @@ function run(rawInput) {
       const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
       const lastEntry = done.length > 0 ? done[done.length - 1] : null;
       const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
+
+      // Feature C: null-mission with wip — emit simplified reminder format.
+      // Skip the full detail computation; just surface the wip string directly.
+      if (!journal.mission) {
+        const reminder = `[MEMENTO: wip: "${wip}" | no active mission] Update journal when information that compaction would destroy changes.`;
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: reminder,
+          },
+        }));
+        process.exit(0);
+      }
 
       // Staleness detection: if the last completed entry is > 30 min old the journal
       // may be behind current work. Escalate the reminder until Claude writes again

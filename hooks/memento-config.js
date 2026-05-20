@@ -206,9 +206,9 @@ function readJournal(journalPath) {
 
     const journal = JSON.parse(raw);
 
-    // Basic schema validation — must have at minimum a mission string
+    // Basic schema validation — must have a mission (string or null; bare wip journals have null)
     if (typeof journal !== 'object' || journal === null) return null;
-    if (typeof journal.mission !== 'string') return null;
+    if (journal.mission !== null && typeof journal.mission !== 'string') return null;
     if (journal.completed !== undefined && !Array.isArray(journal.completed)) return null;
     if (journal.upcoming !== undefined && !Array.isArray(journal.upcoming)) return null;
     if (journal.done !== undefined && !Array.isArray(journal.done)) return null;
@@ -659,8 +659,11 @@ function merge(existing, newLine) {
 //
 // The journal path is included in the header so Claude knows where to write
 // updates via the Write tool — this is the ONLY way Claude knows the path.
-function formatJournalForInjection(journal, mode, journalPath, projectTag) {
+function formatJournalForInjection(journal, mode, journalPath, projectTag, opts) {
   if (!journal) return '';
+
+  // Feature B: previous project for stale-mission header annotation
+  const previousProject = opts && opts.previousProject ? opts.previousProject : null;
 
   // Cross-project suppression: if the journal belongs to a different project,
   // the detailed entries are irrelevant noise regardless of mission status.
@@ -678,12 +681,16 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     && relevantProject && relevantProject !== 'default'
     && relevantProject !== projectTag);
 
-  // Defensive limits — cap what gets injected regardless of what's on disk
-  const mission = (journal.mission || '[no mission set]').slice(0, FIELD_LIMITS.mission);
+  // Feature B: when cross-project suppression fires and the project has changed,
+  // annotate the header so a recovering Claude knows the mission's origin project.
+  const missionWas = (crossProject && previousProject && previousProject !== projectTag)
+    ? ` (mission was: ${previousProject})` : '';
+
+  // Feature C: allow null mission (bare wip journals have no active mission string).
+  // Never output "Mission: null" or "Mission: [no mission set]".
+  const missionStr = journal.mission ? journal.mission.slice(0, FIELD_LIMITS.mission) : null;
   const project = journal.project || 'default';
   const pathHint = journalPath ? ` | path:${journalPath}` : '';
-
-  const closedMark = journal.mission_closed ? ' (CLOSED)' : '';
 
   // Closed-mission suppression: when mission_closed is set, the previous work
   // is finished. Brief mode gets a minimal "no active mission" signal; full mode
@@ -694,7 +701,8 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
       return `[MEMENTO] No active mission | proj:${project}${pathHint}`;
     }
     // Full mode: mission name + closed signal + summary only
-    const lines = [`[MEMENTO] Mission: ${mission} (CLOSED) | proj:${project}${pathHint}`];
+    const closedLabel = missionStr ? `Mission: ${missionStr} (CLOSED)` : 'No active mission (CLOSED)';
+    const lines = [`[MEMENTO] ${closedLabel} | proj:${project}${pathHint}`];
     if (journal.summary) {
       lines.push(`Sum: ${String(journal.summary).slice(0, MAX_SUMMARY_CHARS)}`);
     }
@@ -708,15 +716,20 @@ function formatJournalForInjection(journal, mode, journalPath, projectTag) {
     : (journal.in_progress && journal.in_progress.progress ? journal.in_progress.progress : null);
 
   if (mode === 'brief') {
+    if (!missionStr) {
+      // No active mission (bare wip journal) — just show the header
+      return `[MEMENTO] No active mission | proj:${project}${pathHint}`;
+    }
     const doneFilt = done.filter(Boolean);
     const planFilt = plan.filter(Boolean);
-    return `[MEMENTO] Mission: ${mission}${closedMark} | proj:${project}${pathHint}\n` +
+    return `[MEMENTO] Mission: ${missionStr} | proj:${project}${pathHint}\n` +
            `${doneFilt.length} task(s) done, ${planFilt.length} pending. Update journal when information that compaction would destroy changes.`;
   }
 
   // Full injection (post-compaction recovery)
   const lines = [];
-  lines.push(`[MEMENTO] Mission: ${mission}${closedMark} | proj:${project}${pathHint}`);
+  const missionLabel = missionStr ? `Mission: ${missionStr}` : 'No active mission';
+  lines.push(`[MEMENTO] ${missionLabel} | proj:${project}${missionWas}${pathHint}`);
 
   if (crossProject) {
     // Suppress detailed entries from a different, closed project — they are irrelevant noise.

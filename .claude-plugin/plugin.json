@@ -29,6 +29,17 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/memento-precompact.js\"",
+            "timeout": 5000
+          }
+        ]
+      }
     ]
   }
 }

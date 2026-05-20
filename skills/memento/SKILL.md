@@ -270,6 +270,7 @@ Priority: factual completeness over grammatical correctness. `"fix auth middlewa
 - **Subagent dispatch**: before calling Task()/Agent() and waiting — the gap between dispatch and return is a compaction window; without a wip entry the recovering Claude has no idea what was in flight
 - Producing multiple output files
 - Any work where you know the next 2+ steps
+- **Active debugging**: when you have a working hypothesis, have ruled out causes, or are mid-investigation — the reasoning is entirely in-context and compaction destroys it completely
 
 ```json
 "wip": "deploy auth service — build passed, uploading assets"

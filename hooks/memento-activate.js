@@ -126,12 +126,27 @@ function run(rawInput) {
   const isRecovery = (source === 'compact' || source === 'resume');
   const mode = isRecovery ? 'full' : 'brief';
 
+  // Feature B: capture old project BEFORE calling formatter. The formatter compares
+  // journal.project against projectTag to detect cross-project sessions. Capturing
+  // here lets the formatter annotate the header with the old project when the project
+  // has switched (cross-project suppression fires).
+  const previousProject = pruned ? pruned.project : null;
+
   // Format for injection BEFORE updating journal.project. The formatter compares
   // journal.project against projectTag to detect cross-project sessions. Updating
   // project first would always make them equal, defeating the suppression check
   // when subject is not set. Formatting first lets the original project value
   // participate in the comparison, then we update and persist afterwards.
-  const output = formatJournalForInjection(pruned, mode, journalPath, projectTag);
+  let output = formatJournalForInjection(pruned, mode, journalPath, projectTag, { previousProject });
+
+  // Feature A: at compact/resume with no active mission, nudge Claude to set wip
+  // before proceeding so the next compaction has something to inject.
+  // Fires once per recovery session (SessionStart fires once by definition).
+  // Does not fire for fresh (startup) sessions or when a mission is open.
+  const noActiveMission = pruned.mission_closed;
+  if (isRecovery && noActiveMission) {
+    output += '\nNo active mission — consider setting wip to capture current task state before proceeding (trigger #7: no mission required).';
+  }
 
   // Auto-update journal.project to the current project. Persisted on the write
   // below (which runs if pruning OR the project field changed).

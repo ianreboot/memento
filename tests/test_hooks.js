@@ -248,19 +248,23 @@ test('sidecar: no sidecar — reminder fires and sidecar is created', () => {
   }
 });
 
-test('sidecar: sidecar matches mission_closed — reminder suppressed', () => {
+test('sidecar: sidecar matches mission_closed, wip null — Signal 1 suppressed, Signal 2 fires', () => {
   const dir = tmpDir();
   try {
     const closedAt = new Date().toISOString();
-    const journalPath = writeTestJournal(dir, { mission_closed: closedAt });
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt, wip: null });
     const remindedPath = journalPath.replace(/\.json$/, '.reminded');
 
-    // Pre-write matching sidecar
+    // Pre-write matching sidecar — Signal 1 already fired
     fs.writeFileSync(remindedPath, closedAt, { mode: 0o600 });
 
     const r = runHook('memento-tracker.js', '{"prompt":"another prompt"}', { CLAUDE_CONFIG_DIR: dir });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout.trim(), '', 'reminder must be suppressed when sidecar matches');
+    assert.ok(r.stdout.length > 0, 'Signal 2 must fire even when Signal 1 sidecar matches');
+    const ctx = JSON.parse(r.stdout.trim()).hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('Mission closed'), 'Signal 1 must not fire when sidecar matches');
+    assert.ok(ctx.includes('no active mission'), 'Signal 2 must indicate no active mission');
+    assert.ok(ctx.includes('no wip'), 'Signal 2 must indicate no wip set');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }
@@ -672,6 +676,66 @@ test('precompact: corrupt journal → silent exit 0 (graceful degradation)', () 
     const r = runHook('memento-precompact.js', '{"trigger":"auto","session_id":"test"}', { CLAUDE_CONFIG_DIR: dir });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.stdout.trim(), '', 'corrupt journal must not crash hook — silent exit');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Path C/D: no-mission per-turn reminders (Signal 2 and wip-set path)
+// ---------------------------------------------------------------------------
+
+console.log('\nPath C/D: no-mission per-turn reminders');
+
+test('Path C: mission never set, wip null — Signal 2 fires every turn', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { mission: null, mission_closed: null, wip: null, done: [], completed: [] });
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.length > 0, 'Signal 2 must fire when no mission was ever set');
+    const ctx = JSON.parse(r.stdout.trim()).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('no active mission'), 'Signal 2 must say no active mission');
+    assert.ok(ctx.includes('no wip'), 'Signal 2 must say no wip');
+    assert.ok(ctx.includes('trigger #7'), 'Signal 2 must reference trigger #7');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('Path C: mission_closed set, sidecar fired, wip null — Signal 2 fires (not Signal 1)', () => {
+  const dir = tmpDir();
+  try {
+    const closedAt = new Date().toISOString();
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt, wip: null });
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+    fs.writeFileSync(remindedPath, closedAt, { mode: 0o600 }); // Signal 1 already fired
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout.trim()).hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('Mission closed'), 'Signal 1 must not re-fire when sidecar matches');
+    assert.ok(ctx.includes('no active mission'), 'Path C must say no active mission');
+    assert.ok(ctx.includes('no wip'), 'Path C must say no wip');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('Path D: mission_closed set, sidecar fired, wip set — surfaces wip per-turn', () => {
+  const dir = tmpDir();
+  try {
+    const closedAt = new Date().toISOString();
+    const journalPath = writeTestJournal(dir, { mission_closed: closedAt, wip: 'refactoring auth module' });
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+    fs.writeFileSync(remindedPath, closedAt, { mode: 0o600 }); // Signal 1 already fired
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout.trim()).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('no active mission'), 'Path D must say no active mission');
+    assert.ok(ctx.includes('refactoring auth module'), 'Path D must surface current wip content');
+    assert.ok(ctx.includes('update if changed'), 'Path D must prompt to update wip');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

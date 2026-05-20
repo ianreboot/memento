@@ -123,108 +123,133 @@ function run(rawInput) {
     process.exit(0);
   }
 
-  // Feature C: emit reminder when mission is active OR when wip is set without a mission
-  // (bare wip journals — trigger #7 — have no mission string but still need attention).
-  if (journal && (journal.mission || journal.wip)) {
-    if (!journal.mission_closed) {
-      // Active mission (or bare wip) — sync project tag, then emit staleness-aware reminder.
-      if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
-        journal.project = projectTag;
-        writeJournal(journalPath, journal);
-      }
+  // Route based on journal state — four paths covering all active-work scenarios.
+  //
+  //   Path A — Active mission: per-turn reminder with mission, wip, last entry, staleness
+  //   Path B — Mission just closed (Signal 1): fires once via sidecar, then suppresses
+  //   Path C — No active mission, wip null (Signal 2): per-turn nudge, no sidecar
+  //   Path D — No active mission, wip set: per-turn brief showing current wip, no sidecar
+  //
+  // The UserPromptSubmit hook fires ONLY when the user submits a prompt — every execution
+  // is active work by definition. Sidecar suppression is correct only for one-time events
+  // (Path B: "mission just closed"). Paths C and D fire every turn; there is no idle state
+  // to protect against because the hook cannot fire when the session is idle.
+  const isActiveMission = !!(journal.mission && !journal.mission_closed);
 
-      const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
-      const lastEntry = done.length > 0 ? done[done.length - 1] : null;
-      const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
+  if (isActiveMission) {
+    // Path A: Active mission — sync project tag, then emit staleness-aware reminder.
+    if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
+      journal.project = projectTag;
+      writeJournal(journalPath, journal);
+    }
 
-      // Feature C: null-mission with wip — emit simplified reminder format.
-      // Skip the full detail computation; just surface the wip string directly.
-      if (!journal.mission) {
-        const reminder = `[MEMENTO: wip: "${wip}" | no active mission] Update journal when information that compaction would destroy changes.`;
-        process.stdout.write(JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: 'UserPromptSubmit',
-            additionalContext: reminder,
-          },
-        }));
-        process.exit(0);
-      }
+    const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
+    const lastEntry = done.length > 0 ? done[done.length - 1] : null;
+    const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
 
-      // Staleness detection: if the last completed entry is > 30 min old the journal
-      // may be behind current work. Escalate the reminder until Claude writes again
-      // (a write resets the timestamp and the escalation stops automatically).
-      const STALE_REMINDER_MS = 30 * 60 * 1000;
-      const lastEntryMs = lastEntry && lastEntry.ts ? new Date(lastEntry.ts).getTime() : 0;
-      const isStale = !!(lastEntry && (Date.now() - lastEntryMs > STALE_REMINDER_MS));
+    // Staleness detection: if the last completed entry is > 30 min old the journal
+    // may be behind current work. Escalate the reminder until Claude writes again
+    // (a write resets the timestamp and the escalation stops automatically).
+    const STALE_REMINDER_MS = 30 * 60 * 1000;
+    const lastEntryMs = lastEntry && lastEntry.ts ? new Date(lastEntry.ts).getTime() : 0;
+    const isStale = !!(lastEntry && (Date.now() - lastEntryMs > STALE_REMINDER_MS));
 
-      let detail;
-      if (wip) {
-        // wip takes priority over staleness: active tracked work is more informative
-        // than a stale warning, and the wip description implicitly shows recency.
-        detail = ` | IN PROGRESS: "${wip}"`;
-      } else if (isStale) {
-        // Stale reminder fires once per 10-minute window, then suppresses until
-        // the cooldown expires. Each hook invocation is a new process — a sidecar
-        // file persists the last-fired timestamp between invocations.
-        // When Claude writes a new entry the isStale flag becomes false naturally
-        // (lastEntry.ts is fresh), so the cooldown logic is bypassed entirely.
-        const STALE_COOLDOWN_MS = 10 * 60 * 1000;
-        const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
-        let suppressStale = false;
-        try {
-          const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
-          const storedMs = new Date(stored).getTime();
-          if (!isNaN(storedMs) && (Date.now() - storedMs < STALE_COOLDOWN_MS)) {
-            suppressStale = true;
-          }
-        } catch (e) { /* missing or unreadable — fire the reminder */ }
-
-        if (!suppressStale) {
-          const mins = Math.round((Date.now() - lastEntryMs) / 60000);
-          detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
-          try {
-            fs.writeFileSync(staleRemindedPath, new Date().toISOString(), { mode: 0o600 });
-          } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
-        } else {
-          detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
+    let detail;
+    if (wip) {
+      // wip takes priority over staleness: active tracked work is more informative
+      // than a stale warning, and the wip description implicitly shows recency.
+      detail = ` | IN PROGRESS: "${wip}"`;
+    } else if (isStale) {
+      // Stale reminder fires once per 10-minute window, then suppresses until
+      // the cooldown expires. Each hook invocation is a new process — a sidecar
+      // file persists the last-fired timestamp between invocations.
+      // When Claude writes a new entry the isStale flag becomes false naturally
+      // (lastEntry.ts is fresh), so the cooldown logic is bypassed entirely.
+      const STALE_COOLDOWN_MS = 10 * 60 * 1000;
+      const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+      let suppressStale = false;
+      try {
+        const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
+        const storedMs = new Date(stored).getTime();
+        if (!isNaN(storedMs) && (Date.now() - storedMs < STALE_COOLDOWN_MS)) {
+          suppressStale = true;
         }
-      } else if (lastEntry) {
-        detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
-      } else {
-        // No entries and no wip — session is completely unprotected against compaction.
-        // Escalate the reminder so Claude captures intent before any task runs.
-        detail = ' | no entries yet — open mission is unprotected, write journal now';
-      }
+      } catch (e) { /* missing or unreadable — fire the reminder */ }
 
-      const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal when information that compaction would destroy changes.`;
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: reminder,
-        },
-      }));
+      if (!suppressStale) {
+        const mins = Math.round((Date.now() - lastEntryMs) / 60000);
+        detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
+        try {
+          fs.writeFileSync(staleRemindedPath, new Date().toISOString(), { mode: 0o600 });
+        } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
+      } else {
+        detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
+      }
+    } else if (lastEntry) {
+      detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
     } else {
-      // Closed mission — emit reminder once per mission closure, then suppress.
-      // Each hook invocation is a new process (no in-memory state persists).
-      // A sidecar file stores the mission_closed timestamp; matching = already reminded.
-      const remindedPath = journalPath.replace(/\.json$/, '.reminded');
-      let alreadyReminded = false;
+      // No entries and no wip — session is completely unprotected against compaction.
+      // Escalate the reminder so Claude captures intent before any task runs.
+      detail = ' | no entries yet — open mission is unprotected, write journal now';
+    }
+
+    const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal when information that compaction would destroy changes.`;
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: reminder,
+      },
+    }));
+
+  } else {
+    // No active mission. Covers: mission_closed is set, OR mission was never set (null/absent).
+    //
+    // Check Signal 1 sidecar first. The sidecar records the mission_closed timestamp and
+    // applies only when mission_closed is set. When mission was never set, skip Signal 1
+    // entirely (alreadyReminded = true) and go straight to Path C or D.
+    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
+    let alreadyReminded = false;
+    if (journal.mission_closed) {
       try {
         const stored = fs.readFileSync(remindedPath, 'utf8').trim();
         alreadyReminded = (stored === journal.mission_closed);
       } catch (e) { /* file missing or unreadable — treat as not yet reminded */ }
+    } else {
+      // No mission_closed — mission was never set (bare journal, trigger #7, or null mission).
+      // Signal 1 does not apply. Skip directly to Path C or D.
+      alreadyReminded = true;
+    }
 
-      if (!alreadyReminded) {
-        process.stdout.write(JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: 'UserPromptSubmit',
-            additionalContext: '[MEMENTO] Mission closed — open a new mission when ready.',
-          },
-        }));
-        try {
-          fs.writeFileSync(remindedPath, journal.mission_closed, { mode: 0o600 });
-        } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
-      }
+    if (!alreadyReminded) {
+      // Path B (Signal 1): Mission just closed — emit once, then suppress via sidecar.
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: '[MEMENTO] Mission closed — open a new mission when ready.',
+        },
+      }));
+      try {
+        fs.writeFileSync(remindedPath, journal.mission_closed, { mode: 0o600 });
+      } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
+    } else if (!journal.wip) {
+      // Path C (Signal 2): No active mission, no wip. Per-turn nudge — no sidecar.
+      // Fires every turn until Claude writes a wip entry. Since the hook only fires
+      // on user prompt submission, every execution here is active work.
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: '[MEMENTO: no active mission | no wip — write bare wip if doing task work (trigger #7)]',
+        },
+      }));
+    } else {
+      // Path D: No active mission, wip is set. Surface wip per-turn — no sidecar.
+      // Signal 1 has already fired (or never applied). No further suppression needed.
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: `[MEMENTO: no active mission | wip: "${journal.wip}" — update if changed]`,
+        },
+      }));
     }
   }
 

@@ -25,6 +25,31 @@ Write the journal when information changes that compaction would destroy:
 4. **Multi-step task begins** — set `wip` before the first tool call
 5. **Meaningful research progress** — in exploratory/advisory sessions, set `wip` to snapshot current decision state: what's been eliminated, what remains viable, the open question. This is the write trigger when there are no discrete task completions.
 6. **Mission closes** — set `mission_closed`
+7. **No mission open, significant work** — if `mission_closed` is set (or the journal is new)
+   and you are executing multi-step, irreversible, or infrastructure work, write a bare journal
+   update before starting. The minimum viable write is setting `wip` to describe the current
+   operation — you do not need to open a full mission:
+
+   ```json
+   "wip": "SyncUp shutdown — CF Pages deleted, DNS zone next"
+   ```
+
+   A bare `wip` entry provides recovery value without requiring a mission string, `mission_opened`
+   timestamp, or any done entries. If the work is substantial enough to span multiple sessions,
+   open a new mission instead. For a single-session operation, `wip` alone is enough.
+
+**Infrastructure changes always warrant journaling**, regardless of mission state or how trivial
+the task seems. If you changed any of the following, journal immediately (using trigger #7 if no
+mission is open):
+
+- Environment variables (Vercel, Netlify, Cloudflare, or any cloud platform)
+- Cloud resource config (DNS zones, Pages projects, auth settings, storage buckets)
+- Database records or schema
+- Deployed secrets or credentials
+
+These changes are invisible to `git log`. A future session has no way to diagnose "why does this
+work?" or "what changed?" without an explicit record. Do not wait until session end — write when
+the change lands.
 
 ~3-7 writes per session. Do not write after every minor step — write when information that compaction would destroy has changed.
 
@@ -240,10 +265,16 @@ Priority: factual completeness over grammatical correctness. `"fix auth middlewa
 
 `wip` captures a task that started but hasn't completed — the exact scenario where compaction is most damaging.
 
-**Write the journal with `wip` set before you begin any task that will not complete in a single tool call.** This includes: multi-step sequences (build + deploy, multi-file refactor), launching an async agent and waiting for output, producing multiple output files, or any work where you know the next 2+ steps.
+**Write the journal with `wip` set before you begin any task that will not complete in a single tool call.** This includes:
+- Multi-step sequences (build + deploy, multi-file refactor)
+- **Subagent dispatch**: before calling Task()/Agent() and waiting — the gap between dispatch and return is a compaction window; without a wip entry the recovering Claude has no idea what was in flight
+- Producing multiple output files
+- Any work where you know the next 2+ steps
+- **Active debugging**: when you have a working hypothesis, have ruled out causes, or are mid-investigation — the reasoning is entirely in-context and compaction destroys it completely
 
 ```json
 "wip": "deploy auth service — build passed, uploading assets"
+"wip": "fresh-eyes agent dispatched — reviewing auth.ts + db-query.js for security issues"
 ```
 
 Also use `wip` for blockers: `"blocked: auth test 401 on valid token — root cause unknown"`

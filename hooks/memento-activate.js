@@ -117,21 +117,45 @@ function run(rawInput) {
     process.exit(0);
   }
 
-  // Auto-update journal.project if git says we're in a different project now.
-  // This keeps the project field current as the user moves between projects,
-  // without requiring any manual action from Claude.
-  if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
-    journal.project = projectTag;
-  }
-
-  // Prune stale/oversized entries and persist the cleaned journal.
-  // This is the only write that happens in the activate hook, and only
-  // occurs if pruning actually changed anything (including project field update above).
+  // Prune stale/oversized entries before injection.
   const originalJson = JSON.stringify(journal);
   const pruneResult  = DEBUG ? pruneJournal(journal, { debug: true }) : pruneJournal(journal);
   const pruned       = DEBUG ? pruneResult.journal : pruneResult;
-  const wasPruned    = JSON.stringify(pruned) !== originalJson;
 
+  // Determine injection depth
+  const isRecovery = (source === 'compact' || source === 'resume');
+  const mode = isRecovery ? 'full' : 'brief';
+
+  // Feature B: capture old project BEFORE calling formatter. The formatter compares
+  // journal.project against projectTag to detect cross-project sessions. Capturing
+  // here lets the formatter annotate the header with the old project when the project
+  // has switched (cross-project suppression fires).
+  const previousProject = pruned ? pruned.project : null;
+
+  // Format for injection BEFORE updating journal.project. The formatter compares
+  // journal.project against projectTag to detect cross-project sessions. Updating
+  // project first would always make them equal, defeating the suppression check
+  // when subject is not set. Formatting first lets the original project value
+  // participate in the comparison, then we update and persist afterwards.
+  let output = formatJournalForInjection(pruned, mode, journalPath, projectTag, { previousProject });
+
+  // Feature A: at compact/resume with no active mission, nudge Claude to set wip
+  // before proceeding so the next compaction has something to inject.
+  // Fires once per recovery session (SessionStart fires once by definition).
+  // Does not fire for fresh (startup) sessions or when a mission is open.
+  const noActiveMission = pruned.mission_closed;
+  if (isRecovery && noActiveMission) {
+    output += '\nNo active mission — consider setting wip to capture current task state before proceeding (trigger #7: no mission required).';
+  }
+
+  // Auto-update journal.project to the current project. Persisted on the write
+  // below (which runs if pruning OR the project field changed).
+  const projectChanged = !!(projectTag && projectTag !== 'default' && pruned.project !== projectTag);
+  if (projectChanged) {
+    pruned.project = projectTag;
+  }
+
+  const wasPruned = JSON.stringify(pruned) !== originalJson;
   if (wasPruned) {
     writeJournal(journalPath, pruned);
     journal = pruned;
@@ -141,12 +165,6 @@ function run(rawInput) {
       appendDebugEvents(journalPath, pruneResult.debugEvents);
     }
   }
-
-  // Determine injection depth
-  const isRecovery = (source === 'compact' || source === 'resume');
-  const mode = isRecovery ? 'full' : 'brief';
-
-  const output = formatJournalForInjection(journal, mode, journalPath, projectTag);
 
   if (DEBUG) {
     const completedCount = (Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : [])).filter(Boolean).length;

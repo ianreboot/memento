@@ -53,7 +53,7 @@ function writeTestJournal(dir, overrides = {}) {
     mission:        'test mission',
     mission_opened: new Date().toISOString(),
     mission_closed: null,
-    project:        'testproj',
+    project:        'default',  // avoids triggering cross-project suppression in tests
     summary:        null,
     state:          'active',
     state_reason:   null,
@@ -310,6 +310,114 @@ test('sidecar: corrupt sidecar content — reminder fires (graceful degradation)
   }
 });
 
+// ---------------------------------------------------------------------------
+// stale-open-mission reminder cooldown
+// ---------------------------------------------------------------------------
+
+console.log('\nstale-reminder cooldown');
+
+test('stale-reminder: no sidecar — reminder fires and sidecar is created', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('journal may be stale'), 'stale reminder must fire when no sidecar');
+    assert.ok(fs.existsSync(staleRemindedPath), 'sidecar must be created after first fire');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: sidecar within cooldown — reminder suppressed', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    // Fire was 2 min ago — within 10-min cooldown
+    fs.writeFileSync(staleRemindedPath, new Date(Date.now() - 2 * 60 * 1000).toISOString(), { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('journal may be stale'), 'stale reminder must be suppressed within cooldown');
+    assert.ok(ctx.includes('[MEMENTO:'), 'normal reminder must still fire');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: sidecar expired — reminder re-fires and sidecar updated', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    // Fire was 15 min ago — past 10-min cooldown
+    const expiredFire = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    fs.writeFileSync(staleRemindedPath, expiredFire, { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('journal may be stale'), 'stale reminder must re-fire when sidecar expired');
+    const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
+    assert.ok(stored !== expiredFire, 'sidecar must be updated to a new timestamp');
+    assert.ok(!isNaN(new Date(stored).getTime()), 'sidecar must contain valid ISO timestamp');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: corrupt sidecar — reminder fires (graceful degradation)', () => {
+  const dir = tmpDir();
+  try {
+    const staleTs = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+    const journalPath = writeTestJournal(dir, {
+      completed: [{ task: 'old task', result: 'done', ts: staleTs }],
+    });
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    fs.writeFileSync(staleRemindedPath, 'not-a-timestamp', { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('journal may be stale'), 'stale reminder must fire when sidecar is corrupt');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('stale-reminder: fresh journal entry — isStale false, sidecar not consulted', () => {
+  const dir = tmpDir();
+  try {
+    // Default writeTestJournal writes ts=now — entry is fresh, not stale
+    const journalPath = writeTestJournal(dir);
+    const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+    // Sidecar exists but isStale is false — should be bypassed entirely
+    fs.writeFileSync(staleRemindedPath, new Date(Date.now() - 20 * 60 * 1000).toISOString(), { mode: 0o600 });
+
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+    assert.ok(!ctx.includes('journal may be stale'), 'fresh journal must not show stale detail');
+    assert.ok(ctx.includes('[MEMENTO:'), 'normal reminder must still fire');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
 // False positive checks — coding phrases that must NOT close the mission
 
 test('false positive: "starting over the loop" must NOT close mission', () => {
@@ -367,6 +475,225 @@ test('true positive: "starting over from scratch" closes mission', () => {
     runHook('memento-tracker.js', '{"prompt":"I want to start over from scratch on this"}', { CLAUDE_CONFIG_DIR: dir });
     const updated = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
     assert.ok(updated.mission_closed, '"starting over from scratch" must close mission');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// C1: closed-mission injection suppression (SessionStart)
+// ---------------------------------------------------------------------------
+
+console.log('\nC1: closed-mission injection suppression');
+
+test('startup + closed journal: brief mode emits No active mission', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { mission_closed: new Date().toISOString() });
+    const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes('No active mission'), 'closed mission at startup must say No active mission');
+    assert.ok(!r.stdout.includes('task(s) done'), 'closed mission at startup must NOT include done count');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('compact + closed journal: full mode shows CLOSED, no Done: lines', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, {
+      mission_closed: new Date().toISOString(),
+      done: [{ act: 'old task', result: 'done', ts: new Date().toISOString() }],
+    });
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes('(CLOSED)'), 'closed mission at recovery must show CLOSED marker');
+    assert.ok(!r.stdout.includes('Done:'), 'closed mission at recovery must NOT include Done: lines');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Feature A: no-mission nudge at compact/resume start
+// ---------------------------------------------------------------------------
+
+console.log('\nFeature A: no-mission nudge at recovery');
+
+test('compact + closed mission: nudge line injected', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { mission_closed: new Date().toISOString() });
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      r.stdout.includes('consider setting wip'),
+      'compact+closed must include nudge: consider setting wip'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('compact + active mission: no nudge line', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir); // mission_closed: null (active)
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      !r.stdout.includes('consider setting wip'),
+      'compact+active mission must NOT include nudge'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('startup + closed mission: no nudge line (nudge is recovery-only)', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { mission_closed: new Date().toISOString() });
+    const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      !r.stdout.includes('consider setting wip'),
+      'startup source must NOT trigger nudge even with closed mission'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Feature B: cross-project stale mission warning
+// ---------------------------------------------------------------------------
+
+console.log('\nFeature B: cross-project stale mission warning');
+
+test('cross-project: compact header includes (mission was: old-project)', () => {
+  const dir = tmpDir();
+  try {
+    // Journal has a different project than git-detected "memento".
+    // writeTestJournal uses project:'default' which skips cross-project. Override it.
+    writeTestJournal(dir, { project: 'other-project', mission_closed: null });
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      r.stdout.includes('(mission was: other-project)'),
+      'cross-project compact must annotate header with (mission was: old-project)'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('same project: compact header has no (mission was:) annotation', () => {
+  const dir = tmpDir();
+  try {
+    // Write journal with project matching what git detects ('memento' in this repo)
+    writeTestJournal(dir, { project: 'memento', mission_closed: null });
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      !r.stdout.includes('(mission was:'),
+      'same-project compact must NOT include (mission was:) annotation'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('mission closed + project changed: no (mission was:) annotation (closed-mission branch returns early)', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { project: 'other-project', mission_closed: new Date().toISOString() });
+    const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(
+      !r.stdout.includes('(mission was:'),
+      'closed mission + project changed must NOT include (mission was:) — closed branch returns early'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Feature D: PreCompact auto-checkpoint
+// ---------------------------------------------------------------------------
+
+console.log('\nFeature D: PreCompact auto-checkpoint');
+
+test('precompact: journal exists, wip null → emits checkpoint prompt', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir); // wip defaults to null
+    const r = runHook('memento-precompact.js', '{"trigger":"auto","session_id":"test"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.length > 0, 'must emit checkpoint prompt when wip is null');
+    assert.ok(r.stdout.includes('[MEMENTO]'), 'prompt must include [MEMENTO] marker');
+    assert.ok(r.stdout.includes('compaction'), 'prompt must mention compaction');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('precompact: journal exists, wip already set → silent (already checkpointed)', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { wip: 'deploy in progress — build passed' });
+    const r = runHook('memento-precompact.js', '{"trigger":"auto","session_id":"test"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'must be silent when wip is already set');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('precompact: no journal → silent exit 0', () => {
+  const dir = tmpDir();
+  try {
+    const r = runHook('memento-precompact.js', '{"trigger":"auto","session_id":"test"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'must be silent when no journal exists');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('precompact: corrupt journal → silent exit 0 (graceful degradation)', () => {
+  const dir = tmpDir();
+  try {
+    const mementoDir = path.join(dir, '.memento');
+    fs.mkdirSync(mementoDir, { recursive: true });
+    fs.writeFileSync(path.join(mementoDir, 'testuser.json'), 'not json {{{corrupt');
+    const r = runHook('memento-precompact.js', '{"trigger":"auto","session_id":"test"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', 'corrupt journal must not crash hook — silent exit');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Feature C: null-mission tracker reminder (bare wip journals)
+// ---------------------------------------------------------------------------
+
+console.log('\nFeature C: null-mission tracker reminder');
+
+test('null-mission journal with wip set: tracker emits wip-content reminder', () => {
+  const dir = tmpDir();
+  try {
+    writeTestJournal(dir, { mission: null, mission_closed: null, wip: 'SyncUp shutdown in progress', done: [], completed: [] });
+    const r = runHook('memento-tracker.js', '{"prompt":"continue"}', { CLAUDE_CONFIG_DIR: dir });
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.length > 0, 'must emit reminder for null-mission+wip journal');
+    const ctx = JSON.parse(r.stdout.trim()).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes('SyncUp shutdown in progress'), 'reminder must include wip content');
+    assert.ok(ctx.includes('no active mission'), 'reminder must indicate no active mission');
+    assert.ok(ctx.includes('[MEMENTO:'), 'reminder must use [MEMENTO: prefix');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

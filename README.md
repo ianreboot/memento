@@ -27,7 +27,15 @@
 
 ---
 
-Claude Code forgets the *why* when context compaction fires. Not just which task was running — but why it mattered, what constraints you set, and what the results mean for next steps. Memento preserves this automatically, so Claude can make correct decisions after context loss, not just resume the right task. Unlike memory tools that require Claude to query a store, memento *pushes* context automatically — so even a just-compacted Claude recovers without knowing it needs to ask. Install takes 10 seconds, adds ~350 tokens at session recovery (plus ~50 tokens per message during active work), and runs invisibly in the background.
+Two scenarios where memento pays off concretely:
+
+**Mid-task crash recovery.** When compaction fires mid-task — before any summary exists — the native summary is empty and Claude has no idea where it was. Memento's `wip` field captures exactly what was in flight, so the recovering Claude can verify and resume rather than restart from scratch.
+
+**Multi-session institutional memory.** After many compactions, native summaries only know what happened in the last session. Memento's `done[]` journal persists decision history, rejected alternatives, and constraint rationale across every compaction boundary — the *why* behind choices that a recovering Claude needs to make the same decisions you made.
+
+For short sessions within a single compaction window, Claude Code's native compaction summary is often sufficient. Memento's value compounds across multiple compaction events and deep sessions.
+
+Unlike memory tools that require Claude to query a store, memento *pushes* context automatically — so even a just-compacted Claude recovers without knowing it needs to ask. Install takes 10 seconds, adds ~350 tokens at session recovery (plus ~50 tokens per message during active work), and runs invisibly in the background.
 
 ## The Problem
 
@@ -184,6 +192,8 @@ Memento captures the mission from your first substantive request — close to ve
 
 The mission closes automatically when you run `/clear`, change projects, or explicitly say you are switching to something different.
 
+**One mission at a time.** Memento tracks a single active mission per journal. If you have a closed mission and start new work without opening a fresh one, the journal is in a no-mission state. During this gap, Claude can still write bare `wip` entries to capture in-flight work — full mission tracking resumes when the next mission opens. For sessions where you move between unrelated tasks in rapid succession, the pattern is: complete and close one mission, then let Claude open the next from your first substantive request.
+
 ## Privacy and Data
 
 **What is stored:** Task names, results, and the context (your words or tool output) that explains why each task was needed. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>.json`.
@@ -208,6 +218,21 @@ rm ~/.claude/.memento/<username>.json
 ```bash
 ls ~/.claude/.memento/
 ```
+
+**To edit a journal directly:**
+
+Direct JSON edits are supported and intentional — they are the escape hatch when Claude writes something wrong and you want to fix it without waiting for Claude to correct itself.
+
+Common uses: correcting a mission string, trimming a verbose entry, clearing a stale `wip` that Claude forgot to null out, or seeding a new session with a mission before Claude has had a chance to write one.
+
+```bash
+# Edit in-place
+nano ~/.claude/.memento/<username>.json
+# or
+code ~/.claude/.memento/<username>.json
+```
+
+The only rules: keep it valid JSON, and avoid newlines inside string values (the injection formatter renders them as literal `\n`). The hook re-reads the file on every session start and every user prompt, so changes take effect immediately — no restart needed.
 
 ## Configuration
 

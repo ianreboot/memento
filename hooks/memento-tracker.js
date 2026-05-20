@@ -123,9 +123,11 @@ function run(rawInput) {
     process.exit(0);
   }
 
-  if (journal && journal.mission) {
+  // Feature C: emit reminder when mission is active OR when wip is set without a mission
+  // (bare wip journals — trigger #7 — have no mission string but still need attention).
+  if (journal && (journal.mission || journal.wip)) {
     if (!journal.mission_closed) {
-      // Active mission — sync project tag, then emit staleness-aware reminder.
+      // Active mission (or bare wip) — sync project tag, then emit staleness-aware reminder.
       if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
         journal.project = projectTag;
         writeJournal(journalPath, journal);
@@ -134,6 +136,19 @@ function run(rawInput) {
       const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
       const lastEntry = done.length > 0 ? done[done.length - 1] : null;
       const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
+
+      // Feature C: null-mission with wip — emit simplified reminder format.
+      // Skip the full detail computation; just surface the wip string directly.
+      if (!journal.mission) {
+        const reminder = `[MEMENTO: wip: "${wip}" | no active mission] Update journal when information that compaction would destroy changes.`;
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: reminder,
+          },
+        }));
+        process.exit(0);
+      }
 
       // Staleness detection: if the last completed entry is > 30 min old the journal
       // may be behind current work. Escalate the reminder until Claude writes again
@@ -148,8 +163,31 @@ function run(rawInput) {
         // than a stale warning, and the wip description implicitly shows recency.
         detail = ` | IN PROGRESS: "${wip}"`;
       } else if (isStale) {
-        const mins = Math.round((Date.now() - lastEntryMs) / 60000);
-        detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
+        // Stale reminder fires once per 10-minute window, then suppresses until
+        // the cooldown expires. Each hook invocation is a new process — a sidecar
+        // file persists the last-fired timestamp between invocations.
+        // When Claude writes a new entry the isStale flag becomes false naturally
+        // (lastEntry.ts is fresh), so the cooldown logic is bypassed entirely.
+        const STALE_COOLDOWN_MS = 10 * 60 * 1000;
+        const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
+        let suppressStale = false;
+        try {
+          const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
+          const storedMs = new Date(stored).getTime();
+          if (!isNaN(storedMs) && (Date.now() - storedMs < STALE_COOLDOWN_MS)) {
+            suppressStale = true;
+          }
+        } catch (e) { /* missing or unreadable — fire the reminder */ }
+
+        if (!suppressStale) {
+          const mins = Math.round((Date.now() - lastEntryMs) / 60000);
+          detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
+          try {
+            fs.writeFileSync(staleRemindedPath, new Date().toISOString(), { mode: 0o600 });
+          } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
+        } else {
+          detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
+        }
       } else if (lastEntry) {
         detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
       } else {

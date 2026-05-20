@@ -457,6 +457,135 @@ test('writeJournal: normal text fields pass through unchanged', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C1: closed-mission injection suppression
+// ---------------------------------------------------------------------------
+
+console.log('\nC1: closed-mission injection suppression');
+
+test('brief: closed mission returns "No active mission" (no counts)', () => {
+  const j = newJournal('completed work', 'myproj');
+  j.mission_closed = new Date().toISOString();
+  j.done = [{ act: 'did stuff', result: 'ok', ts: new Date().toISOString() }];
+  j.plan = ['leftover plan'];
+  const out = formatJournalForInjection(j, 'brief', '/tmp/test.json');
+  assert.ok(out.includes('No active mission'), 'closed brief must say No active mission');
+  assert.ok(out.includes('proj:myproj'), 'closed brief must include project');
+  assert.ok(out.includes('path:/tmp/test.json'), 'closed brief must include path');
+  assert.ok(!out.includes('task(s) done'), 'closed brief must NOT include done counts');
+  assert.ok(!out.includes('pending'), 'closed brief must NOT include pending counts');
+});
+
+test('full: closed mission shows mission name + CLOSED + summary, no Done/Plan/WIP lines', () => {
+  const j = newJournal('completed work', 'myproj');
+  j.mission_closed = new Date().toISOString();
+  j.summary = 'did X then Y';
+  j.done = [{ act: 'did stuff', result: 'ok', ts: new Date().toISOString() }];
+  j.plan = ['leftover plan'];
+  j.wip = 'something in progress';
+  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
+  assert.ok(out.includes('Mission: completed work (CLOSED)'), 'closed full must show mission + CLOSED');
+  assert.ok(out.includes('Sum: did X then Y'), 'closed full must show summary');
+  assert.ok(!out.includes('Done:'), 'closed full must NOT include Done: lines');
+  assert.ok(!out.includes('Plan:'), 'closed full must NOT include Plan: lines');
+  assert.ok(!out.includes('WIP:'), 'closed full must NOT include WIP: line');
+});
+
+test('full: closed mission with no summary shows mission header only', () => {
+  const j = newJournal('completed work', 'myproj');
+  j.mission_closed = new Date().toISOString();
+  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
+  assert.ok(out.includes('Mission: completed work (CLOSED)'), 'must show mission + CLOSED');
+  assert.ok(!out.includes('Sum:'), 'must NOT show Sum: when summary is null');
+  assert.strictEqual(out.split('\n').length, 1, 'must be a single line when no summary');
+});
+
+// ---------------------------------------------------------------------------
+// Feature C: bare wip schema relaxation (null mission)
+// ---------------------------------------------------------------------------
+
+console.log('\nFeature C: null mission schema');
+
+test('readJournal accepts journal with null mission (bare wip write)', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'null-mission.json');
+    const j = {
+      mission: null,
+      mission_opened: new Date().toISOString(),
+      mission_closed: null,
+      project: 'testproj',
+      wip: 'current task in progress',
+      done: [],
+      plan: [],
+    };
+    fs.writeFileSync(journalPath, JSON.stringify(j, null, 2));
+    const result = readJournal(journalPath);
+    assert.ok(result !== null, 'readJournal must return non-null for null-mission journal');
+    assert.strictEqual(result.mission, null, 'mission must be null after read');
+    assert.strictEqual(result.wip, 'current task in progress', 'wip must be preserved');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('readJournal still rejects mission that is non-string, non-null (e.g. 42)', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'bad-mission.json');
+    fs.writeFileSync(journalPath, JSON.stringify({ mission: 42, done: [], plan: [] }));
+    assert.strictEqual(readJournal(journalPath), null, 'non-string non-null mission must be rejected');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+test('formatJournalForInjection: null mission → header shows No active mission (not Mission: null)', () => {
+  const j = {
+    mission: null,
+    mission_opened: new Date().toISOString(),
+    mission_closed: null,
+    project: 'myproj',
+    wip: 'deploying auth service',
+    done: [],
+    plan: [],
+  };
+  const outBrief = formatJournalForInjection(j, 'brief', '/tmp/test.json');
+  assert.ok(outBrief.includes('No active mission'), 'brief null-mission must say No active mission');
+  assert.ok(!outBrief.includes('Mission: null'), 'brief must not show Mission: null');
+  assert.ok(!outBrief.includes('[no mission set]'), 'brief must not show [no mission set]');
+
+  const outFull = formatJournalForInjection(j, 'full', '/tmp/test.json');
+  assert.ok(outFull.includes('No active mission'), 'full null-mission must say No active mission');
+  assert.ok(!outFull.includes('Mission: null'), 'full must not show Mission: null');
+  assert.ok(!outFull.includes('[no mission set]'), 'full must not show [no mission set]');
+});
+
+test('writeJournal + readJournal round-trip with null mission', () => {
+  const dir = tmpDir();
+  try {
+    const journalPath = path.join(dir, 'null-mission.json');
+    const j = {
+      mission: null,
+      mission_opened: new Date().toISOString(),
+      mission_closed: null,
+      project: 'roundtripproj',
+      subject: null,
+      summary: null,
+      wip: 'step one in progress',
+      done: [],
+      plan: [],
+    };
+    writeJournal(journalPath, j);
+    const loaded = readJournal(journalPath);
+    assert.ok(loaded !== null, 'null-mission journal must read back non-null');
+    assert.strictEqual(loaded.mission, null, 'mission must remain null after round-trip');
+    assert.strictEqual(loaded.wip, 'step one in progress', 'wip must survive round-trip');
+  } finally {
+    fs.rmSync(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

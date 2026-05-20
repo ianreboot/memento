@@ -48,7 +48,7 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
 fi
 
 REPO_RAW="https://raw.githubusercontent.com/ianreboot/memento/main/hooks"
-HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "install.sh")
+HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "memento-precompact.js" "install.sh")
 
 # ---------------------------------------------------------------------------
 # Uninstall
@@ -75,7 +75,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     MEMENTO_SETTINGS="$SETTINGS" node -e "
       const fs = require('fs');
       const s = JSON.parse(fs.readFileSync(process.env.MEMENTO_SETTINGS, 'utf8'));
-      for (const event of ['SessionStart', 'UserPromptSubmit']) {
+      for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact']) {
         if (Array.isArray(s.hooks && s.hooks[event])) {
           s.hooks[event] = s.hooks[event].filter(e =>
             !(e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')))
@@ -150,20 +150,36 @@ echo "  Installed: $SKILLS_DIR/SKILL.md"
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
 
-MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
-  const fs   = require('fs');
-  const sp   = process.env.MEMENTO_SETTINGS;
-  const hd   = process.env.MEMENTO_HOOKS_DIR;
-  const s    = JSON.parse(fs.readFileSync(sp, 'utf8'));
+MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" MEMENTO_FORCE="$FORCE" node -e "
+  const fs    = require('fs');
+  const sp    = process.env.MEMENTO_SETTINGS;
+  const hd    = process.env.MEMENTO_HOOKS_DIR;
+  const force = process.env.MEMENTO_FORCE === '1';
+  const s     = JSON.parse(fs.readFileSync(sp, 'utf8'));
   if (!s.hooks) s.hooks = {};
+
+  // --force: strip all existing memento entries before re-wiring so that
+  // stale entries from a previous install (e.g., pointing to a different path)
+  // do not block the hasHook() guard and silently survive the upgrade.
+  if (force) {
+    for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreCompact']) {
+      if (Array.isArray(s.hooks[ev])) {
+        s.hooks[ev] = s.hooks[ev].filter(e =>
+          !(e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')))
+        );
+      }
+    }
+  }
 
   const hasHook = (ev) =>
     Array.isArray(s.hooks[ev]) &&
     s.hooks[ev].some(e => e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')));
 
-  if (!s.hooks.SessionStart)    s.hooks.SessionStart    = [];
+  if (!s.hooks.SessionStart)     s.hooks.SessionStart    = [];
   if (!s.hooks.UserPromptSubmit) s.hooks.UserPromptSubmit = [];
+  if (!s.hooks.PreCompact)       s.hooks.PreCompact       = [];
 
+  let wired = false;
   if (!hasHook('SessionStart')) {
     s.hooks.SessionStart.push({ hooks: [{
       type: 'command',
@@ -171,6 +187,7 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
       timeout: 5000,
       statusMessage: 'Restoring task context...',
     }]});
+    wired = true;
   }
 
   if (!hasHook('UserPromptSubmit')) {
@@ -179,11 +196,48 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
       command: 'node \"' + hd + '/memento-tracker.js\"',
       timeout: 3000,
     }]});
+    wired = true;
+  }
+
+  if (!hasHook('PreCompact')) {
+    s.hooks.PreCompact.push({ hooks: [{
+      type: 'command',
+      command: 'node \"' + hd + '/memento-precompact.js\"',
+      timeout: 5000,
+    }]});
+    wired = true;
   }
 
   fs.writeFileSync(sp, JSON.stringify(s, null, 2) + '\n');
-  console.log('  Hooks wired in settings.json (backup at settings.json.bak)');
+  if (wired) console.log('  Hooks wired in settings.json (backup at settings.json.bak)');
 "
+
+# Post-install verification: confirm settings.json hook commands point to installed path.
+# This catches the upgrade scenario where stale paths survive the wiring step.
+echo ""
+echo "Verifying installation..."
+MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
+  const fs = require('fs');
+  const s = JSON.parse(fs.readFileSync(process.env.MEMENTO_SETTINGS, 'utf8'));
+  const hd = process.env.MEMENTO_HOOKS_DIR;
+  const check = (ev) =>
+    Array.isArray(s.hooks && s.hooks[ev]) &&
+    s.hooks[ev].some(e => e.hooks && e.hooks.some(h =>
+      h.command && h.command.includes('memento') && h.command.includes(hd)
+    ));
+  const ss = check('SessionStart');
+  const up = check('UserPromptSubmit');
+  const pc = check('PreCompact');
+  console.log('  ' + (ss ? 'ok' : 'FAIL') + '  SessionStart      -> ' + hd);
+  console.log('  ' + (up ? 'ok' : 'FAIL') + '  UserPromptSubmit  -> ' + hd);
+  console.log('  ' + (pc ? 'ok' : 'FAIL') + '  PreCompact        -> ' + hd);
+  if (!ss || !up || !pc) {
+    console.log('');
+    console.log('  Hook wiring may be incorrect.');
+    console.log('  Try: bash hooks/install.sh --force');
+    process.exit(1);
+  }
+" 2>/dev/null
 
 echo ""
 echo "Done. Restart Claude Code to activate memento."

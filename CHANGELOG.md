@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.1 — 2026-05-20
+
+- **Signal 2 — per-turn no-mission reminder**: `memento-tracker.js` now emits a per-turn `[MEMENTO: no active mission | no wip — write bare wip if doing task work (trigger #7)]` reminder when no active mission is open and `wip` is null. No sidecar suppression. Fires every turn until Claude writes a wip entry. Covers all three no-mission states: `mission_closed` set (after Signal 1 fires), mission never set, and bare null-mission journals from trigger #7.
+- **Path D — wip visibility after Signal 1**: Once Claude writes a `wip` in a no-mission session, the tracker emits `[MEMENTO: no active mission | wip: "..." — update if changed]` each turn. Previously, the sidecar suppressed all reminders after Signal 1, so wip was captured on disk but never surfaced per-turn again. Path D closes this gap.
+- **Architectural change**: The tracker's two-path routing (active mission / closed-mission-sidecar) is replaced by four-path routing (A: active mission, B: Signal 1 one-time close reminder, C: Signal 2 per-turn no-mission nudge, D: per-turn wip visibility). The outer gate `if (journal.mission || journal.wip)` is removed — all journal states are now handled, including journals where both are null.
+- **Root cause**: `UserPromptSubmit` fires only when the user submits a prompt. Every hook execution is active work by definition. The sidecar suppression that blocked Paths C and D was solving a problem that does not exist — the injection is invisible to the user and there is no idle state to protect against.
+- **Tests**: 87 passing (up from 84) — 3 new tests covering Path C (never-set mission), Path C (sidecar-fired + wip null), Path D (sidecar-fired + wip set). Updated existing sidecar-suppression test to reflect correct new behavior.
+
 ## v0.3.0 — 2026-05-20
 
 - **A — No-mission nudge at recovery**: `memento-activate.js` now appends a wip-write prompt when source is `compact` or `resume` and the journal has no active mission (`mission_closed` is set). Fires once per recovery session by definition (SessionStart runs once). Never fires on fresh startup or when a mission is open. Addresses the dominant observed failure: Claude stops journaling entirely between missions.

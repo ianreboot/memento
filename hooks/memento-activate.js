@@ -1,43 +1,32 @@
 #!/usr/bin/env node
-// memento — SessionStart hook
+// memento — SessionStart hook (v0.4.0)
 //
 // Runs once per session start (including after compaction and on resume).
-// Reads the journal for the current project and injects it as hidden system
-// context so Claude can orient itself without any visible user output.
 //
-// Injection depth depends on why the session is starting:
-//   source "compact" or "resume" → full journal (recovery mode)
-//   source "startup" or unknown  → brief one-liner (save tokens on fresh sessions)
+// Two responsibilities:
+//   1. Reset the turn counter sidecar so UserPromptSubmit can distinguish
+//      Turn 1 (full prompt) from Turn N (compressed prompt).
+//   2. Emit a MANDATORY WRITE prompt appropriate for the session source:
+//        compact / resume → Recovery prompt (Variant 8)
+//        startup / unknown → Turn 1 prompt (Variant 1/2/3)
 //
-// The journal path is included in the header so Claude knows where to write
-// updates via the Write tool. Claude is the only writer for task entries —
-// this hook may write for housekeeping only (pruning, project tag updates).
+// For recovery sessions the sidecar is reset to 1 (not 0) so the first
+// UserPromptSubmit emits a compressed Turn 2 prompt rather than the full
+// Turn 1 prompt again — the Recovery prompt already covered that.
 //
-// If the journal is missing, corrupt, or too large, this hook exits silently.
-// It never blocks session start.
-//
-// Debug mode (MEMENTO_DEBUG=1): logs a session boundary event and injection
-// details to the shadow debug journal for post-session forensics.
+// Never blocks session start. Silent-fails on any error.
 
 'use strict';
 
+const fs = require('fs');
 const {
   getInstanceTag,
-  getProjectTag,
   getClaudeDir,
   getJournalPath,
+  getTurnSidecarPath,
   readJournal,
-  pruneJournal,
-  writeJournal,
-  formatJournalForInjection,
-  appendDebugEvents,
-  cleanupDebugJournal,
-  DEBUG,
 } = require('./memento-config');
 
-// Read hook input from stdin — Claude Code sends a JSON object with:
-//   { session_id, source, ... }
-// source values: "startup" | "compact" | "resume"
 let rawInput = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { rawInput += chunk; });
@@ -51,141 +40,91 @@ process.stdin.on('end', () => {
 });
 
 function run(rawInput) {
-  let source    = 'startup';
-  let sessionId = null;
+  let source = 'startup';
   try {
     const data = JSON.parse(rawInput);
-    source    = (data && data.source)     ? String(data.source).toLowerCase()    : 'startup';
-    sessionId = (data && data.session_id) ? String(data.session_id)              : null;
+    source = (data && data.source) ? String(data.source).toLowerCase() : 'startup';
   } catch (e) { /* use defaults */ }
 
-  const claudeDir    = getClaudeDir();
-  const instanceTag  = getInstanceTag();          // determines the file path (per-instance)
-  const projectTag   = getProjectTag();           // current project (for journal.project field)
-  const journalPath  = getJournalPath(claudeDir, instanceTag);
-  const now         = new Date().toISOString();
+  const claudeDir   = getClaudeDir();
+  const instanceTag = getInstanceTag();
+  const journalPath = getJournalPath(claudeDir, instanceTag);
+  const turnPath    = getTurnSidecarPath(journalPath);
 
-  // If debug mode is off, clean up any stale debug journal left over from
-  // a previous debug session. Runs silently on every session start.
-  if (!DEBUG) {
-    cleanupDebugJournal(journalPath);
-  }
-
-  // Log session boundary regardless of whether journal exists
-  if (DEBUG) {
-    appendDebugEvents(journalPath, [{
-      type: 'session',
-      data: { session_id: sessionId, started_at: now, source, ended_at: null },
-    }]);
-  }
-
-  let journal = readJournal(journalPath);
-  if (!journal) {
-    // No journal yet — emit path hint so Claude knows the canonical path to
-    // write to. Without this, Claude cannot know which path the hook expects,
-    // and may write to a different path that never gets injected.
-    //
-    // Source-aware language: post-compaction sessions get urgency since the session
-    // is already in motion and Claude must create the journal before any task runs.
-    const isPostCompaction = (source === 'compact' || source === 'resume');
-    const creation = isPostCompaction
-      ? `You are recovering from compaction with no prior journal. ` +
-        `Create the journal IMMEDIATELY from available context — infer mission from ` +
-        `compaction summary or WORK_STATE if present. Set project to "${projectTag}".`
-      : `Create journal at the path above BEFORE your first task. ` +
-        `If mission is unclear, use "[pending]" and update when clear. ` +
-        `Any session without a journal is unprotected against compaction. Set project to "${projectTag}".`;
-    const hint = `[MEMENTO] No prior journal | instance:${instanceTag} | proj:${projectTag} | path:${journalPath}\n` +
-                 creation;
-    if (DEBUG) {
-      const hintBytes = Buffer.byteLength(hint, 'utf8');
-      appendDebugEvents(journalPath, [{
-        type: 'injection',
-        data: {
-          ts:              now,
-          hook:            'memento-activate.js',
-          source,
-          mode:            'path_hint',
-          pruned:          false,
-          journal_existed: false,
-          entries_injected: 0,
-          bytes_injected:  hintBytes,
-        },
-      }]);
-    }
-    process.stdout.write(hint);
-    process.exit(0);
-  }
-
-  // Prune stale/oversized entries before injection.
-  const originalJson = JSON.stringify(journal);
-  const pruneResult  = DEBUG ? pruneJournal(journal, { debug: true }) : pruneJournal(journal);
-  const pruned       = DEBUG ? pruneResult.journal : pruneResult;
-
-  // Determine injection depth
   const isRecovery = (source === 'compact' || source === 'resume');
-  const mode = isRecovery ? 'full' : 'brief';
+  const journal    = readJournal(journalPath);
 
-  // Feature B: capture old project BEFORE calling formatter. The formatter compares
-  // journal.project against projectTag to detect cross-project sessions. Capturing
-  // here lets the formatter annotate the header with the old project when the project
-  // has switched (cross-project suppression fires).
-  const previousProject = pruned ? pruned.project : null;
+  // Reset turn counter.
+  // Recovery: start at 1 so the next UserPromptSubmit emits compressed Turn 2
+  // (the Recovery prompt already served as the full Turn 1 prompt).
+  // Fresh start: reset to 0 so the next UserPromptSubmit emits full Turn 1.
+  try {
+    fs.writeFileSync(turnPath, isRecovery ? '1' : '0', { mode: 0o600 });
+  } catch (e) { /* silent */ }
 
-  // Format for injection BEFORE updating journal.project. The formatter compares
-  // journal.project against projectTag to detect cross-project sessions. Updating
-  // project first would always make them equal, defeating the suppression check
-  // when subject is not set. Formatting first lets the original project value
-  // participate in the comparison, then we update and persist afterwards.
-  let output = formatJournalForInjection(pruned, mode, journalPath, projectTag, { previousProject });
-
-  // Feature A: at compact/resume with no active mission, nudge Claude to set wip
-  // before proceeding so the next compaction has something to inject.
-  // Fires once per recovery session (SessionStart fires once by definition).
-  // Does not fire for fresh (startup) sessions or when a mission is open.
-  const noActiveMission = pruned.mission_closed;
-  if (isRecovery && noActiveMission) {
-    output += '\nNo active mission — consider setting wip to capture current task state before proceeding (trigger #7: no mission required).';
+  let output = '';
+  if (isRecovery) {
+    output = buildRecoveryPrompt(journal, journalPath);
+  } else {
+    output = buildTurn1Prompt(journal, journalPath);
   }
 
-  // Auto-update journal.project to the current project. Persisted on the write
-  // below (which runs if pruning OR the project field changed).
-  const projectChanged = !!(projectTag && projectTag !== 'default' && pruned.project !== projectTag);
-  if (projectChanged) {
-    pruned.project = projectTag;
-  }
-
-  const wasPruned = JSON.stringify(pruned) !== originalJson;
-  if (wasPruned) {
-    writeJournal(journalPath, pruned);
-    journal = pruned;
-    // Flush prune debug events (writeJournal already wrote them via its own
-    // debug path, but pruneJournal events from activate need to be flushed too)
-    if (DEBUG && pruneResult.debugEvents && pruneResult.debugEvents.length > 0) {
-      appendDebugEvents(journalPath, pruneResult.debugEvents);
-    }
-  }
-
-  if (DEBUG) {
-    const completedCount = (Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : [])).filter(Boolean).length;
-    appendDebugEvents(journalPath, [{
-      type: 'injection',
-      data: {
-        ts:              now,
-        hook:            'memento-activate.js',
-        source,
-        mode,
-        pruned:          wasPruned,
-        journal_existed: true,
-        entries_injected: completedCount,
-        bytes_injected:  output ? Buffer.byteLength(output, 'utf8') : 0,
-      },
-    }]);
-  }
-
-  if (output) {
-    process.stdout.write(output);
-  }
-
+  if (output) process.stdout.write(output);
   process.exit(0);
+}
+
+// Variant 8: Recovery — post-compaction session start
+function buildRecoveryPrompt(journal, journalPath) {
+  const header = `[MEMENTO] Recovering | path: ${journalPath}`;
+  const why    = journal && typeof journal.why === 'string' ? journal.why : null;
+  const when   = journal && journal.when ? journal.when : null;
+
+  if (!why) {
+    return `${header}\nNo prior journal. Why are we doing this?\n` +
+           `MANDATORY WRITE — Write your current why before your first tool call. [GUESS] always valid.\n` +
+           `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
+  }
+
+  const isGuess   = why.startsWith('[GUESS]');
+  const prevLabel = isGuess ? why : `"${why}"`;
+  const whenStr   = when ? ` | Set: ${when}` : '';
+
+  // Build arc from why_history (chain of previous why values)
+  const history = (journal.why_history || []).filter(e => e && typeof e.w === 'string');
+  const arcStr  = history.length > 0
+    ? '\nArc: ' + [...history.map(e => `"${e.w}"`), `"${why}"`].join(' \u2192 ')
+    : '';
+
+  return `${header}\nWhy: ${prevLabel}${whenStr}${arcStr}\n` +
+         `MANDATORY WRITE — Why are we doing this? Confirm or update why before your first tool call. [GUESS] always valid.\n` +
+         `{"why":"...","when":"<ISO>","why_history":[...existing entries...]}`;
+}
+
+// Variants 1/2/3: Turn 1 — fresh session start
+function buildTurn1Prompt(journal, journalPath) {
+  const header = `[MEMENTO] MANDATORY WRITE | Turn 1 | path: ${journalPath}`;
+  const why    = journal && typeof journal.why === 'string' ? journal.why : null;
+  const when   = journal && journal.when ? journal.when : null;
+
+  if (!why) {
+    // Variant 1: No journal (or old-schema journal treated as non-existent)
+    return `${header}\nNo prior journal. Why are we doing this?\n` +
+           `Write your current why. [GUESS] always valid if intent is unclear.\n` +
+           `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
+  }
+
+  const isGuess  = why.startsWith('[GUESS]');
+  const prevWhen = when || '<prev-ISO>';
+
+  if (isGuess) {
+    // Variant 3: [GUESS] why — encourage upgrade if evidence is available
+    return `${header}\nWhy are we doing this? Previous: ${why}\n` +
+           `Write your current why. Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
+           `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+  }
+
+  // Variant 2: Confirmed why — cheapest write (same is fine)
+  return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
+         `Write your current why. [GUESS] always valid. Same is fine.\n` +
+         `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
 }

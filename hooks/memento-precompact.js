@@ -1,17 +1,12 @@
 #!/usr/bin/env node
-// memento — PreCompact hook
+// memento — PreCompact hook (v0.4.0)
 //
-// Runs before context compaction fires. If the journal exists but wip is not set,
-// emits a checkpoint prompt so Claude has a chance to write current task state
-// before the compaction window closes.
+// Runs before context compaction. Always emits a MANDATORY WRITE prompt so
+// Claude records its current 'why' before context clears. The write is
+// mandatory regardless of current journal state — this is the last chance
+// to capture intent before the compaction window closes.
 //
-// If wip is already set (journal is already checkpointed), exits silently.
-// If no journal exists, exits silently — nothing to checkpoint.
 // On any error, exits 0 silently — must never block compaction.
-//
-// Output format: raw text to stdout (same as SessionStart / memento-activate.js).
-// PreCompact receives JSON input via stdin ({ trigger, session_id, ... }) but
-// this hook only needs the journal path, derived from the instance tag.
 
 'use strict';
 
@@ -40,18 +35,25 @@ function main() {
   const journalPath = getJournalPath(claudeDir, instanceTag);
   const journal     = readJournal(journalPath);
 
-  // Only prompt if journal exists and wip is not already set.
-  // If wip is set, the journal is already checkpointed — no action needed.
-  // If no journal, there is nothing to checkpoint.
-  if (!journal || journal.wip) {
-    process.exit(0);
-    return;
+  const why  = journal && typeof journal.why === 'string' ? journal.why : null;
+  const when = journal && journal.when ? journal.when : null;
+
+  const header = `[MEMENTO] MANDATORY WRITE — LAST WRITE OPPORTUNITY | path: ${journalPath}`;
+
+  let message;
+  if (!why) {
+    message = `${header}\nNo prior journal. Why are we doing this?\n` +
+              `Always write why+when before context clears. [GUESS] always valid.\n` +
+              `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
+  } else {
+    const isGuess   = why.startsWith('[GUESS]');
+    const prevLabel = isGuess ? why : `"${why}"`;
+    const prevWhen  = when || '<prev-ISO>';
+    message = `${header}\nWhy are we doing this? Previous: ${prevLabel}\n` +
+              `Always write why+when before context clears. Append to why_history only if why changed. [GUESS] always valid.\n` +
+              `{"why":"...","when":"<ISO>","why_history":[...append {"w":"${why}","t":"${prevWhen}"} only if changed...]}`;
   }
 
-  const message =
-    `[MEMENTO] Context compaction about to fire. ` +
-    `If mid-task, write current state to journal now — set wip before compaction clears the context window. ` +
-    `Path: ${journalPath}`;
   process.stdout.write(message + '\n');
   process.exit(0);
 }

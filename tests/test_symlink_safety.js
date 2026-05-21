@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Symlink safety tests for readJournal and writeJournal
+// Symlink safety tests for readJournal and writeJournal (v0.4.0)
 // Verifies that the hooks refuse to read/write through symlinks at the journal path.
 'use strict';
 
@@ -8,7 +8,7 @@ const fs     = require('fs');
 const os     = require('os');
 const path   = require('path');
 
-const { readJournal, writeJournal, newJournal } = require('../hooks/memento-config.js');
+const { readJournal, writeJournal } = require('../hooks/memento-config.js');
 
 let passed = 0;
 let failed = 0;
@@ -30,6 +30,11 @@ function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'memento-symlink-'));
 }
 
+// v0.4.0 journal template
+function v4Journal() {
+  return { why: 'symlink test', when: new Date().toISOString(), why_history: [] };
+}
+
 console.log('\nsymlink safety');
 
 test('readJournal refuses a symlink at the journal path', () => {
@@ -37,10 +42,7 @@ test('readJournal refuses a symlink at the journal path', () => {
   const target  = path.join(dir, 'target.json');
   const symlink = path.join(dir, 'journal.json');
   try {
-    // Write a valid journal to the target
-    const j = newJournal('symlink test', 'test');
-    fs.writeFileSync(target, JSON.stringify(j, null, 2), { mode: 0o600 });
-    // Replace the journal path with a symlink pointing to the target
+    fs.writeFileSync(target, JSON.stringify(v4Journal(), null, 2), { mode: 0o600 });
     fs.symlinkSync(target, symlink);
     const result = readJournal(symlink);
     assert.strictEqual(result, null, 'readJournal must return null for a symlink');
@@ -56,8 +58,7 @@ test('writeJournal refuses to write when journal path is a symlink', () => {
   try {
     fs.writeFileSync(target, 'original content', { mode: 0o600 });
     fs.symlinkSync(target, symlink);
-    const j = newJournal('symlink write test', 'test');
-    writeJournal(symlink, j);
+    writeJournal(symlink, v4Journal());
     // Target must be unchanged — writeJournal must have refused
     const content = fs.readFileSync(target, 'utf8');
     assert.strictEqual(content, 'original content', 'writeJournal must not clobber symlink target');
@@ -70,11 +71,10 @@ test('writeJournal succeeds for a normal (non-symlink) path', () => {
   const dir = tmpDir();
   try {
     const journalPath = path.join(dir, 'journal.json');
-    const j = newJournal('normal write test', 'test');
-    writeJournal(journalPath, j);
+    writeJournal(journalPath, v4Journal());
     assert.ok(fs.existsSync(journalPath), 'journal file must exist after normal write');
     const loaded = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
-    assert.strictEqual(loaded.mission, 'normal write test');
+    assert.strictEqual(loaded.why, 'symlink test');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }
@@ -84,11 +84,10 @@ test('readJournal succeeds for a normal (non-symlink) path', () => {
   const dir = tmpDir();
   try {
     const journalPath = path.join(dir, 'journal.json');
-    const j = newJournal('normal read test', 'test');
-    fs.writeFileSync(journalPath, JSON.stringify(j, null, 2), { mode: 0o600 });
+    fs.writeFileSync(journalPath, JSON.stringify(v4Journal(), null, 2), { mode: 0o600 });
     const loaded = readJournal(journalPath);
     assert.ok(loaded !== null, 'readJournal must succeed for normal file');
-    assert.strictEqual(loaded.mission, 'normal read test');
+    assert.strictEqual(loaded.why, 'symlink test');
   } finally {
     fs.rmSync(dir, { recursive: true });
   }

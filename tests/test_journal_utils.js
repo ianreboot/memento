@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for memento-config.js journal utilities
+// Unit tests for memento-config.js (v0.4.0)
 'use strict';
 
 const assert = require('assert');
@@ -10,14 +10,12 @@ const path   = require('path');
 const {
   getInstanceTag,
   getJournalPath,
+  getTurnSidecarPath,
+  sanitizeLine,
   readJournal,
   writeJournal,
-  pruneJournal,
-  formatJournalForInjection,
-  newJournal,
-  MAX_COMPLETED,
-  MAX_UPCOMING,
-  MAX_SUMMARY_CHARS,
+  MAX_WHY_CHARS,
+  MAX_WHY_HISTORY,
 } = require('../hooks/memento-config.js');
 
 let passed = 0;
@@ -62,534 +60,236 @@ test('ignores blocklisted MEMENTO_INSTANCE_TAG values', () => {
   process.env.MEMENTO_INSTANCE_TAG = 'workspace';
   const tag = getInstanceTag();
   delete process.env.MEMENTO_INSTANCE_TAG;
-  // 'workspace' is blocklisted — should fall through to OS username or 'default'
   assert.notStrictEqual(tag, 'workspace', 'blocklisted override must be ignored');
 });
 
 // ---------------------------------------------------------------------------
-// pruneJournal
+// getTurnSidecarPath
 // ---------------------------------------------------------------------------
 
-console.log('\npruneJournal');
+console.log('\ngetTurnSidecarPath');
 
-test('null input returns null', () => {
-  assert.strictEqual(pruneJournal(null), null);
+test('returns .turn path alongside .json path', () => {
+  const journalPath = '/some/dir/.memento/alice.json';
+  const sidecarPath = getTurnSidecarPath(journalPath);
+  assert.strictEqual(sidecarPath, '/some/dir/.memento/alice.turn');
 });
 
-test('rolling window: oldest entry is folded into summary', () => {
-  const j = newJournal('test mission', 'testproj');
-  for (let i = 0; i < MAX_COMPLETED + 1; i++) {
-    j.done.push({ act: `task-${i}`, result: `result-${i}`, ts: new Date().toISOString() });
-  }
-  const pruned = pruneJournal(j);
-  assert.strictEqual(pruned.done.length, MAX_COMPLETED);
-  assert.ok(pruned.summary && pruned.summary.length > 0, 'summary must be set after fold');
-  assert.ok(pruned.summary.includes('task-0'), 'oldest entry (task-0) must be in summary');
-  assert.ok(!pruned.summary.includes(`task-${MAX_COMPLETED}`), 'newest entry must stay in done, not summary');
+test('handles paths without .json extension gracefully', () => {
+  const journalPath = '/some/dir/.memento/alice';
+  const sidecarPath = getTurnSidecarPath(journalPath);
+  // Should not crash — result just has .turn appended differently
+  assert.ok(typeof sidecarPath === 'string');
 });
 
-test('rolling window: summary stays within MAX_SUMMARY_CHARS', () => {
-  const j = newJournal('test', 'test');
-  j.summary = 'x'.repeat(MAX_SUMMARY_CHARS - 5);
-  for (let i = 0; i < MAX_COMPLETED + 1; i++) {
-    j.done.push({ act: `task-${i}`, result: `r`, ts: new Date().toISOString() });
-  }
-  const pruned = pruneJournal(j);
-  assert.ok(
-    pruned.summary.length <= MAX_SUMMARY_CHARS,
-    `summary length ${pruned.summary.length} must be <= ${MAX_SUMMARY_CHARS}`
-  );
+// ---------------------------------------------------------------------------
+// sanitizeLine
+// ---------------------------------------------------------------------------
+
+console.log('\nsanitizeLine');
+
+test('collapses newlines to spaces', () => {
+  assert.strictEqual(sanitizeLine('hello\nworld'), 'hello world');
+  assert.strictEqual(sanitizeLine('hello\r\nworld'), 'hello world');
 });
 
-test('stale collapse: clears done + plan, sets mission_closed', () => {
-  const j = newJournal('stale mission', 'staleproj');
-  const oldDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(); // 15 days ago (active missions collapse at STALE_DAYS*2=14d)
-  j.done  = [{ act: 'old task', result: 'done', ts: oldDate }];
-  j.plan  = ['pending thing'];
-  const pruned = pruneJournal(j);
-  assert.strictEqual(pruned.done.length, 0, 'done must be cleared');
-  assert.strictEqual(pruned.plan.length, 0, 'plan must be cleared');
-  assert.ok(pruned.mission_closed, 'mission_closed must be set');
-  assert.ok(pruned.summary && pruned.summary.includes('old task'), 'collapsed task must appear in summary');
+test('collapses multiple spaces', () => {
+  assert.strictEqual(sanitizeLine('hello   world'), 'hello world');
 });
 
-test('stale collapse: already-closed mission stays closed', () => {
-  const j = newJournal('stale mission', 'staleproj');
-  const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-  j.done         = [{ act: 'old task', result: 'done', ts: oldDate }];
-  j.mission_closed = oldDate;
-  const pruned = pruneJournal(j);
-  assert.ok(pruned.mission_closed, 'mission_closed must remain set');
+test('trims leading/trailing whitespace', () => {
+  assert.strictEqual(sanitizeLine('  hello  '), 'hello');
 });
 
-test('plan array capped at MAX_UPCOMING', () => {
-  const j = newJournal('test', 'test');
-  for (let i = 0; i < MAX_UPCOMING + 5; i++) j.plan.push(`task ${i}`);
-  const pruned = pruneJournal(j);
-  assert.ok(pruned.plan.length <= MAX_UPCOMING);
+test('passes through normal text unchanged', () => {
+  assert.strictEqual(sanitizeLine('fixing auth for mobile'), 'fixing auth for mobile');
 });
 
-test('fresh journal with no entries is returned unchanged', () => {
-  const j = newJournal('fresh', 'fresh');
-  const pruned = pruneJournal(j);
-  assert.strictEqual(pruned.done.length, 0);
-  assert.strictEqual(pruned.plan.length, 0);
+// ---------------------------------------------------------------------------
+// readJournal
+// ---------------------------------------------------------------------------
+
+console.log('\nreadJournal');
+
+test('returns null for missing file', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'missing.json');
+  assert.strictEqual(readJournal(p), null);
 });
 
-test('backward-compat: old journal with completed/upcoming normalized to done/plan', () => {
-  const j = {
-    mission:        'old schema journal',
+test('returns null for invalid JSON', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'bad.json');
+  fs.writeFileSync(p, 'not json');
+  assert.strictEqual(readJournal(p), null);
+});
+
+test('returns null for old-schema journal (no why field)', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'old.json');
+  fs.writeFileSync(p, JSON.stringify({
+    mission: 'old mission',
     mission_opened: new Date().toISOString(),
     mission_closed: null,
-    project:        'oldproj',
-    summary:        null,
-    state:          'active',
-    state_reason:   null,
-    in_progress:    null,
-    completed:      [{ task: 'old task', result: 'result', ts: new Date().toISOString() }],
-    upcoming:       ['next step'],
-  };
-  const pruned = pruneJournal(j);
-  assert.ok(Array.isArray(pruned.done), 'done must be an array after normalization');
-  assert.strictEqual(pruned.done.length, 1, 'one entry must survive');
-  assert.ok(Array.isArray(pruned.plan), 'plan must be an array after normalization');
-  assert.strictEqual(pruned.plan.length, 1, 'one plan item must survive');
-  assert.ok(!('completed' in pruned), 'old completed field must be removed');
-  assert.ok(!('upcoming' in pruned), 'old upcoming field must be removed');
+    project: 'myapp',
+    done: [],
+    plan: [],
+  }, null, 2));
+  assert.strictEqual(readJournal(p), null, 'pre-v0.4.0 journal (no why) must return null');
 });
 
-test('summarizeEntries preserves ctx content in stale collapse', () => {
-  const j = newJournal('ctx test', 'ctxproj');
-  const oldDate = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
-  j.done = [{ act: 'analyze SKU-47', result: 'margin negative', ctx: 'note: Q3 launch must hold', ts: oldDate }];
-  const pruned = pruneJournal(j);
-  assert.ok(pruned.summary && pruned.summary.includes('Q3 launch must hold'), 'ctx content must appear in collapsed summary');
+test('returns object for valid v0.4.0 journal', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'valid.json');
+  const journal = { why: 'fixing auth', when: '2026-05-21T14:00:00Z', why_history: [] };
+  fs.writeFileSync(p, JSON.stringify(journal, null, 2));
+  const result = readJournal(p);
+  assert.ok(result !== null, 'valid v0.4.0 journal must be returned');
+  assert.strictEqual(result.why, 'fixing auth');
 });
 
-// ---------------------------------------------------------------------------
-// formatJournalForInjection
-// ---------------------------------------------------------------------------
-
-console.log('\nformatJournalForInjection');
-
-test('brief: includes [MEMENTO] header + count line', () => {
-  const j = newJournal('build something', 'myproj');
-  j.done = [{ act: 'done task', result: 'ok', ts: new Date().toISOString() }];
-  j.plan = ['next task'];
-  const out = formatJournalForInjection(j, 'brief', '/tmp/test.json');
-  assert.ok(out.includes('[MEMENTO]'), 'must include [MEMENTO] marker');
-  assert.ok(out.includes('build something'), 'must include mission text');
-  assert.ok(out.includes('1 task(s) done'), 'must include done count');
-  assert.ok(out.includes('1 pending'), 'must include pending count');
-  assert.ok(!out.includes('Done:'), 'brief mode must NOT include Done: lines');
+test('returns object for journal with null why (no prior write)', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'null-why.json');
+  const journal = { why: null, when: '2026-05-21T14:00:00Z', why_history: [] };
+  fs.writeFileSync(p, JSON.stringify(journal, null, 2));
+  const result = readJournal(p);
+  assert.ok(result !== null, 'journal with null why must be returned (field present)');
+  assert.strictEqual(result.why, null);
 });
 
-test('brief: backward-compat with old completed/upcoming field names', () => {
-  const j = {
-    mission: 'old journal', mission_opened: new Date().toISOString(),
-    mission_closed: null, project: 'p', summary: null,
-    completed: [{ task: 'done task', result: 'ok', ts: new Date().toISOString() }],
-    upcoming:  ['next task'],
-  };
-  const out = formatJournalForInjection(j, 'brief', '/tmp/test.json');
-  assert.ok(out.includes('1 task(s) done'), 'backward-compat: must count completed as done');
-  assert.ok(out.includes('1 pending'), 'backward-compat: must count upcoming as pending');
+test('returns null if why is wrong type (not string or null)', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'bad-why.json');
+  fs.writeFileSync(p, JSON.stringify({ why: 42, when: '2026-05-21T14:00:00Z', why_history: [] }));
+  assert.strictEqual(readJournal(p), null);
 });
 
-test('full: includes Done: and Plan: lines', () => {
-  const j = newJournal('build something', 'myproj');
-  j.done = [{ act: 'fix auth', result: 'PASETO impl', ts: new Date().toISOString() }];
-  j.plan = ['deploy'];
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('Done: fix auth'), 'must include Done: line');
-  assert.ok(out.includes('-> PASETO impl'), 'must include result after ->');
-  assert.ok(out.includes('Plan: deploy'), 'must include Plan: line');
+test('returns null if why_history is wrong type', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'bad-hist.json');
+  fs.writeFileSync(p, JSON.stringify({ why: 'ok', when: '2026-05-21T14:00:00Z', why_history: 'bad' }));
+  assert.strictEqual(readJournal(p), null);
 });
 
-test('full: includes ctx field when present', () => {
-  const j = newJournal('test', 'test');
-  j.done = [{ act: 'analyze', result: 'found bug', ctx: 'user said it was broken', ts: new Date().toISOString() }];
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('| ctx: user said it was broken'), 'must include ctx field');
-});
-
-test('full: shows WIP line when wip string is set', () => {
-  const j = newJournal('wip mission', 'myproj');
-  j.wip = 'running analysis: 3/10 done';
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('WIP: running analysis'), 'must include WIP line');
-  assert.ok(out.includes('3/10 done'), 'must include wip content');
-});
-
-test('full: backward-compat WIP from in_progress.progress', () => {
-  const j = {
-    mission: 'old wip', mission_opened: new Date().toISOString(),
-    mission_closed: null, project: 'p', summary: null,
-    in_progress: { task: 'deploy service', started: new Date().toISOString(), progress: 'build passed, uploading' },
-    completed: [], upcoming: [],
-  };
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('WIP:'), 'backward-compat: must show WIP from in_progress.progress');
-  assert.ok(out.includes('build passed, uploading'), 'backward-compat: must show in_progress progress text');
-});
-
-test('full: backward-compat Done: line from old task field', () => {
-  const j = {
-    mission: 'old schema', mission_opened: new Date().toISOString(),
-    mission_closed: null, project: 'p', summary: null,
-    completed: [{ task: 'fix auth', result: 'PASETO impl', ts: new Date().toISOString() }],
-    upcoming: [],
-  };
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('Done: fix auth'), 'backward-compat: must display task field as Done: act');
-});
-
-test('full: no footer paragraph in injection', () => {
-  const j = newJournal('test no footer', 'myproj');
-  j.done = [{ act: 'some task', result: 'done', ts: new Date().toISOString() }];
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(!out.includes('Write upcoming[]'), 'must NOT include old footer paragraph');
-  assert.ok(!out.includes('set in_progress'), 'must NOT include old footer paragraph');
-});
-
-test('full: includes journal path in header', () => {
-  const j   = newJournal('path test', 'myproj');
-  const out = formatJournalForInjection(j, 'full', '/home/user/.claude/.memento/testuser.json');
-  assert.ok(out.includes('path:/home/user/.claude/.memento/testuser.json'), 'must include file path');
-});
-
-test('null journal returns empty string', () => {
-  assert.strictEqual(formatJournalForInjection(null, 'full', '/tmp/test.json'), '');
+test('returns null for symlink at journal path', () => {
+  const dir = tmpDir();
+  const realFile = path.join(dir, 'real.json');
+  const linkFile = path.join(dir, 'link.json');
+  fs.writeFileSync(realFile, JSON.stringify({ why: 'auth', when: '2026-05-21T14:00:00Z', why_history: [] }));
+  try { fs.symlinkSync(realFile, linkFile); } catch (e) { return; } // skip if no symlink support
+  assert.strictEqual(readJournal(linkFile), null, 'symlink at journal path must return null');
 });
 
 // ---------------------------------------------------------------------------
-// writeJournal + readJournal
+// writeJournal + readJournal roundtrip
 // ---------------------------------------------------------------------------
 
 console.log('\nwriteJournal + readJournal');
 
 test('round-trip: write then read returns equivalent data', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('round trip test', 'testproj');
-    j.done = [{ act: 'test task', result: 'ok', ts: new Date().toISOString() }];
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(loaded !== null, 'readJournal must return non-null after write');
-    assert.strictEqual(loaded.mission, 'round trip test');
-    assert.strictEqual(loaded.done.length, 1);
-    assert.strictEqual(loaded.done[0].act, 'test task');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  const data = {
+    why: 'fixing auth for mobile',
+    when: '2026-05-21T14:00:00Z',
+    why_history: [{ w: 'setup project', t: '2026-05-21T12:00:00Z' }],
+  };
+  writeJournal(journalPath, data);
+  const result = readJournal(journalPath);
+  assert.ok(result !== null, 'written journal must be readable');
+  assert.strictEqual(result.why, data.why);
+  assert.strictEqual(result.when, data.when);
+  assert.deepStrictEqual(result.why_history, data.why_history);
 });
 
 test('writeJournal creates file with 0600 permissions', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    writeJournal(journalPath, newJournal('perm test', 'test'));
-    const mode = fs.statSync(journalPath).mode & 0o777;
-    assert.strictEqual(mode & 0o077, 0, `group/world bits must be 0, got 0o${mode.toString(8)}`);
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  writeJournal(journalPath, { why: 'test', when: new Date().toISOString(), why_history: [] });
+  const stat = fs.statSync(journalPath);
+  const mode = stat.mode & 0o777;
+  assert.strictEqual(mode, 0o600, `permissions must be 0600, got ${mode.toString(8)}`);
 });
 
-test('writeJournal truncates overlong act field to 80 chars', () => {
+test('writeJournal truncates overlong why to MAX_WHY_CHARS', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('trunc test', 'test');
-    j.done = [{ act: 'x'.repeat(200), result: 'ok', ts: new Date().toISOString() }];
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(loaded.done[0].act.length <= 80, 'act must be capped at 80 chars');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  const longWhy = 'a'.repeat(MAX_WHY_CHARS + 50);
+  writeJournal(journalPath, { why: longWhy, when: new Date().toISOString(), why_history: [] });
+  const result = readJournal(journalPath);
+  assert.ok(result !== null);
+  assert.ok(result.why.length <= MAX_WHY_CHARS, `why must be <= ${MAX_WHY_CHARS} chars`);
 });
 
-test('writeJournal truncates overlong result field to 120 chars', () => {
+test('writeJournal caps why_history to MAX_WHY_HISTORY entries (drops oldest)', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('trunc test', 'test');
-    j.done = [{ act: 'a task', result: 'y'.repeat(200), ts: new Date().toISOString() }];
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(loaded.done[0].result.length <= 120, 'result must be capped at 120 chars');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
+  const journalPath = getJournalPath(dir, 'testuser');
+  const history = [];
+  for (let i = 0; i < MAX_WHY_HISTORY + 3; i++) {
+    history.push({ w: `entry-${i}`, t: '2026-05-21T00:00:00Z' });
   }
+  writeJournal(journalPath, { why: 'current', when: new Date().toISOString(), why_history: history });
+  const result = readJournal(journalPath);
+  assert.ok(result !== null);
+  assert.strictEqual(result.why_history.length, MAX_WHY_HISTORY, `why_history must be capped at ${MAX_WHY_HISTORY}`);
+  // Oldest entries (0, 1, 2) are dropped; newest (3..12) are kept
+  assert.ok(!result.why_history.some(e => e.w === 'entry-0'), 'oldest entry must be dropped');
+  assert.ok(result.why_history.some(e => e.w === `entry-${MAX_WHY_HISTORY + 2}`), 'newest entry must be kept');
 });
 
-test('writeJournal preserves absent ctx as absent (not coerced to empty string)', () => {
+test('writeJournal handles null why', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('ctx test', 'test');
-    j.done = [{ act: 'task without ctx', result: 'ok', ts: new Date().toISOString() }]; // no ctx field
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(!('ctx' in loaded.done[0]), 'absent ctx must remain absent after round-trip');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  writeJournal(journalPath, { why: null, when: new Date().toISOString(), why_history: [] });
+  const result = readJournal(journalPath);
+  assert.ok(result !== null);
+  assert.strictEqual(result.why, null);
 });
 
-test('writeJournal normalizes old completed/task fields to done/act on write', () => {
+test('writeJournal sanitizes embedded newlines in why', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const oldJournal = {
-      mission: 'old schema', mission_opened: new Date().toISOString(),
-      mission_closed: null, project: 'p', summary: null,
-      state: 'active', state_reason: null, in_progress: null,
-      completed: [{ task: 'legacy task', result: 'ok', ts: new Date().toISOString() }],
-      upcoming: ['next step'],
-    };
-    writeJournal(journalPath, oldJournal);
-    const loaded = readJournal(journalPath);
-    assert.ok(Array.isArray(loaded.done), 'done must be written');
-    assert.strictEqual(loaded.done[0].act, 'legacy task', 'task field must be migrated to act');
-    assert.ok(Array.isArray(loaded.plan), 'plan must be written');
-    assert.ok(!('completed' in loaded), 'old completed field must be gone');
-    assert.ok(!('upcoming' in loaded), 'old upcoming field must be gone');
-    assert.ok(!('state' in loaded), 'state field must be dropped');
-    assert.ok(!('in_progress' in loaded), 'in_progress field must be dropped');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  writeJournal(journalPath, { why: 'line1\nline2', when: new Date().toISOString(), why_history: [] });
+  const result = readJournal(journalPath);
+  assert.ok(result !== null);
+  assert.ok(!result.why.includes('\n'), 'newlines must be removed from why');
 });
 
-test('readJournal returns null for missing file', () => {
-  assert.strictEqual(readJournal(`/tmp/nonexistent-${Date.now()}.json`), null);
-});
-
-test('readJournal returns null for invalid JSON', () => {
+test('writeJournal defaults when to now if absent', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'bad.json');
-    fs.writeFileSync(journalPath, 'not json {{{broken');
-    assert.strictEqual(readJournal(journalPath), null);
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  const before = Date.now();
+  writeJournal(journalPath, { why: 'test' });
+  const after = Date.now();
+  const result = readJournal(journalPath);
+  assert.ok(result !== null);
+  const whenMs = new Date(result.when).getTime();
+  assert.ok(whenMs >= before && whenMs <= after + 1000, 'when should default to approximately now');
 });
 
-test('readJournal returns null when mission field is missing', () => {
+test('writeJournal filters invalid why_history entries (no w field)', () => {
   const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'bad.json');
-    fs.writeFileSync(journalPath, JSON.stringify({ done: [], plan: [] })); // no mission
-    assert.strictEqual(readJournal(journalPath), null);
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Newline sanitization (S3)
-// ---------------------------------------------------------------------------
-
-console.log('\nnewline sanitization');
-
-test('writeJournal: summary with embedded newline is stored without newline', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('sanitize test', 'test');
-    j.summary = 'line one\nline two';
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(loaded.summary && !loaded.summary.includes('\n'), 'summary must not contain newline after write');
-    assert.ok(loaded.summary.includes('line one') && loaded.summary.includes('line two'), 'both parts must survive');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-test('writeJournal: wip with embedded newline is stored without newline', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('sanitize wip test', 'test');
-    j.wip = 'step one\nstep two';
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(loaded.wip && !loaded.wip.includes('\n'), 'wip must not contain newline after write');
-    assert.ok(loaded.wip.includes('step one') && loaded.wip.includes('step two'), 'both parts must survive');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-test('writeJournal: summary with only newlines is stored as null', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('sanitize null test', 'test');
-    j.summary = '\n\n';
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.strictEqual(loaded.summary, null, 'whitespace-only summary must be null after write');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-test('writeJournal: normal text fields pass through unchanged', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'test.json');
-    const j = newJournal('normal text test', 'test');
-    j.wip = 'deploy auth service — build passed, uploading assets';
-    j.summary = 'fixed auth, deployed to staging';
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.strictEqual(loaded.wip, 'deploy auth service — build passed, uploading assets');
-    assert.strictEqual(loaded.summary, 'fixed auth, deployed to staging');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// C1: closed-mission injection suppression
-// ---------------------------------------------------------------------------
-
-console.log('\nC1: closed-mission injection suppression');
-
-test('brief: closed mission returns "No active mission" (no counts)', () => {
-  const j = newJournal('completed work', 'myproj');
-  j.mission_closed = new Date().toISOString();
-  j.done = [{ act: 'did stuff', result: 'ok', ts: new Date().toISOString() }];
-  j.plan = ['leftover plan'];
-  const out = formatJournalForInjection(j, 'brief', '/tmp/test.json');
-  assert.ok(out.includes('No active mission'), 'closed brief must say No active mission');
-  assert.ok(out.includes('proj:myproj'), 'closed brief must include project');
-  assert.ok(out.includes('path:/tmp/test.json'), 'closed brief must include path');
-  assert.ok(!out.includes('task(s) done'), 'closed brief must NOT include done counts');
-  assert.ok(!out.includes('pending'), 'closed brief must NOT include pending counts');
-});
-
-test('full: closed mission shows mission name + CLOSED + summary, no Done/Plan/WIP lines', () => {
-  const j = newJournal('completed work', 'myproj');
-  j.mission_closed = new Date().toISOString();
-  j.summary = 'did X then Y';
-  j.done = [{ act: 'did stuff', result: 'ok', ts: new Date().toISOString() }];
-  j.plan = ['leftover plan'];
-  j.wip = 'something in progress';
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('Mission: completed work (CLOSED)'), 'closed full must show mission + CLOSED');
-  assert.ok(out.includes('Sum: did X then Y'), 'closed full must show summary');
-  assert.ok(!out.includes('Done:'), 'closed full must NOT include Done: lines');
-  assert.ok(!out.includes('Plan:'), 'closed full must NOT include Plan: lines');
-  assert.ok(!out.includes('WIP:'), 'closed full must NOT include WIP: line');
-});
-
-test('full: closed mission with no summary shows mission header only', () => {
-  const j = newJournal('completed work', 'myproj');
-  j.mission_closed = new Date().toISOString();
-  const out = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(out.includes('Mission: completed work (CLOSED)'), 'must show mission + CLOSED');
-  assert.ok(!out.includes('Sum:'), 'must NOT show Sum: when summary is null');
-  assert.strictEqual(out.split('\n').length, 1, 'must be a single line when no summary');
-});
-
-// ---------------------------------------------------------------------------
-// Feature C: bare wip schema relaxation (null mission)
-// ---------------------------------------------------------------------------
-
-console.log('\nFeature C: null mission schema');
-
-test('readJournal accepts journal with null mission (bare wip write)', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'null-mission.json');
-    const j = {
-      mission: null,
-      mission_opened: new Date().toISOString(),
-      mission_closed: null,
-      project: 'testproj',
-      wip: 'current task in progress',
-      done: [],
-      plan: [],
-    };
-    fs.writeFileSync(journalPath, JSON.stringify(j, null, 2));
-    const result = readJournal(journalPath);
-    assert.ok(result !== null, 'readJournal must return non-null for null-mission journal');
-    assert.strictEqual(result.mission, null, 'mission must be null after read');
-    assert.strictEqual(result.wip, 'current task in progress', 'wip must be preserved');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-test('readJournal still rejects mission that is non-string, non-null (e.g. 42)', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'bad-mission.json');
-    fs.writeFileSync(journalPath, JSON.stringify({ mission: 42, done: [], plan: [] }));
-    assert.strictEqual(readJournal(journalPath), null, 'non-string non-null mission must be rejected');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
-});
-
-test('formatJournalForInjection: null mission → header shows No active mission (not Mission: null)', () => {
-  const j = {
-    mission: null,
-    mission_opened: new Date().toISOString(),
-    mission_closed: null,
-    project: 'myproj',
-    wip: 'deploying auth service',
-    done: [],
-    plan: [],
-  };
-  const outBrief = formatJournalForInjection(j, 'brief', '/tmp/test.json');
-  assert.ok(outBrief.includes('No active mission'), 'brief null-mission must say No active mission');
-  assert.ok(!outBrief.includes('Mission: null'), 'brief must not show Mission: null');
-  assert.ok(!outBrief.includes('[no mission set]'), 'brief must not show [no mission set]');
-
-  const outFull = formatJournalForInjection(j, 'full', '/tmp/test.json');
-  assert.ok(outFull.includes('No active mission'), 'full null-mission must say No active mission');
-  assert.ok(!outFull.includes('Mission: null'), 'full must not show Mission: null');
-  assert.ok(!outFull.includes('[no mission set]'), 'full must not show [no mission set]');
-});
-
-test('writeJournal + readJournal round-trip with null mission', () => {
-  const dir = tmpDir();
-  try {
-    const journalPath = path.join(dir, 'null-mission.json');
-    const j = {
-      mission: null,
-      mission_opened: new Date().toISOString(),
-      mission_closed: null,
-      project: 'roundtripproj',
-      subject: null,
-      summary: null,
-      wip: 'step one in progress',
-      done: [],
-      plan: [],
-    };
-    writeJournal(journalPath, j);
-    const loaded = readJournal(journalPath);
-    assert.ok(loaded !== null, 'null-mission journal must read back non-null');
-    assert.strictEqual(loaded.mission, null, 'mission must remain null after round-trip');
-    assert.strictEqual(loaded.wip, 'step one in progress', 'wip must survive round-trip');
-  } finally {
-    fs.rmSync(dir, { recursive: true });
-  }
+  const journalPath = getJournalPath(dir, 'testuser');
+  const history = [
+    { w: 'valid', t: '2026-05-21T12:00:00Z' },
+    { t: '2026-05-21T12:00:00Z' }, // missing w
+    null,                            // null entry
+    { w: 'also-valid', t: '2026-05-21T13:00:00Z' },
+  ];
+  writeJournal(journalPath, { why: 'test', when: new Date().toISOString(), why_history: history });
+  const result = readJournal(journalPath);
+  assert.ok(result !== null);
+  assert.strictEqual(result.why_history.length, 2, 'invalid entries must be filtered out');
+  assert.strictEqual(result.why_history[0].w, 'valid');
+  assert.strictEqual(result.why_history[1].w, 'also-valid');
 });
 
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 
-console.log('');
+console.log('\n');
 if (failed > 0) {
   console.error(`${passed} passed, ${failed} failed`);
   process.exit(1);

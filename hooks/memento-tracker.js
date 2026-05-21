@@ -1,53 +1,28 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook
+// memento — UserPromptSubmit hook (v0.4.0)
 //
-// Runs on every user message. Two responsibilities:
+// Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
+// writes its current 'why' to the journal before the next tool call.
 //
-//   1. Detect mission-closing events (/clear, explicit project shifts) and
-//      mark the current mission as closed in the journal. This must happen
-//      in the hook because /clear wipes the conversation — Claude never sees
-//      the message and cannot act on it.
+// Turn 1  (sidecar = 0): full prompt with schema template
+// Turn N+ (sidecar > 0): compressed one-line prompt with previous why shown
 //
-//   2. Emit a minimal per-turn reminder so Claude keeps updating the journal
-//      throughout the session (not just at the start). The reminder is
-//      injected as hidden system context — never shown to the user.
+// The hook does NOT write journal entries. Claude writes those via the Write
+// tool as instructed by SKILL.md. This hook only emits prompts and manages
+// the turn counter sidecar.
 //
-// This hook does NOT write journal entries. Claude writes those via the Write
-// tool as instructed by the SKILL.md. This hook only handles mission lifecycle
-// and the attention anchor.
-//
-// Performance: all I/O is minimal (read one small JSON file + conditional write).
-// The hook must return quickly to avoid perceived latency. On a warm filesystem
-// cache, the read + JSON parse completes in <5ms. The conditional write (only
-// on /clear) uses the same atomic pattern as the main journal writer.
+// Silent-fails on any filesystem error — must never block user prompts.
 
 'use strict';
 
 const fs = require('fs');
 const {
   getInstanceTag,
-  getProjectTag,
   getClaudeDir,
   getJournalPath,
+  getTurnSidecarPath,
   readJournal,
-  writeJournal,
-  appendDebugEvents,
-  DEBUG,
 } = require('./memento-config');
-
-// Patterns that indicate the user is closing the current context.
-// IMPORTANT: Be conservative — false-positive closure is data-destructive.
-// Only match unambiguous, explicit context-switching phrases.
-// Removed broad patterns (\bnew mission\b, \bdifferent project\b, \bfresh start\b,
-// \bstart over\b) that match ordinary coding conversation.
-const MISSION_CLOSE_PATTERNS = [
-  /^\/clear$/i,                                                               // Exact /clear command
-  /^\/new\s*mission\b/i,                                                      // Explicit /new-mission command
-  /\bswitch(ing)?\s+to\s+a?\s*different\s+project\b/i,                       // "switching to a different project" (not "switch project to X")
-  /\b(move|moving)\s+(on\s+to|to)\s+(a\s+)?(new|different)\s+project\b/i,   // "moving to a new project"
-  /\bstart(ing)?\s+over\s+(from\s+scratch|completely)\b/i,                   // "starting over from scratch" (not "starting over the loop")
-  /\bdone\s+with\s+(this|the\s+current)\s+(project|mission|session)\b/i,     // "done with this project"
-];
 
 let rawInput = '';
 process.stdin.setEncoding('utf8');
@@ -62,196 +37,85 @@ process.stdin.on('end', () => {
 });
 
 function run(rawInput) {
-  let prompt = '';
-  try {
-    const data = JSON.parse(rawInput);
-    prompt = (data && data.prompt) ? String(data.prompt).trim() : '';
-  } catch (e) { /* use empty string */ }
-
   const claudeDir   = getClaudeDir();
-  const instanceTag = getInstanceTag();   // file path (per-instance)
-  const projectTag  = getProjectTag();    // current project (to keep journal.project current)
+  const instanceTag = getInstanceTag();
   const journalPath = getJournalPath(claudeDir, instanceTag);
+  const turnPath    = getTurnSidecarPath(journalPath);
 
-  // 1. Detect mission-closing events
-  const matchedPattern = MISSION_CLOSE_PATTERNS.find(re => re.test(prompt));
-  if (matchedPattern) {
-    const journal = readJournal(journalPath);
-    if (journal && !journal.mission_closed) {
-      const closedAt = new Date().toISOString();
-      journal.mission_closed = closedAt;
-      journal.plan = [];      // clear plan on close — closed mission has no pending tasks
-      writeJournal(journalPath, journal);
-      if (DEBUG) {
-        appendDebugEvents(journalPath, [{
-          type: 'lifecycle',
-          data: {
-            type:            'mission_closed',
-            ts:              closedAt,
-            mission:         journal.mission,
-            trigger:         'hook_pattern_match',
-            pattern_matched: matchedPattern.toString(),
-          },
-        }]);
-      }
-    }
-    // Don't emit a reminder — the mission is closing, not continuing
-    process.exit(0);
-  }
+  // Read current turn counter (0 = Turn 1, >0 = Turn N)
+  let turn = 0;
+  try {
+    const stored = parseInt(fs.readFileSync(turnPath, 'utf8').trim(), 10);
+    if (!isNaN(stored) && stored >= 0) turn = stored;
+  } catch (e) { /* missing sidecar — treat as turn 0 (Turn 1) */ }
 
-  // 2. Emit per-turn reminder if a journal exists with an active mission.
-  //    Also auto-update journal.project if git says we've moved to a different project.
+  // Increment and persist the turn counter
+  const nextTurn = turn + 1;
+  try { fs.writeFileSync(turnPath, String(nextTurn), { mode: 0o600 }); } catch (e) { /* silent */ }
+
   const journal = readJournal(journalPath);
+  const why     = journal && typeof journal.why === 'string' ? journal.why : null;
+  const when    = journal && journal.when ? journal.when : null;
 
-  // Health check: journal file exists but is corrupt or unreadable.
-  // Tell Claude to rewrite it before the session drifts further without journaling.
-  if (!journal) {
-    try {
-      const st = fs.lstatSync(journalPath);
-      if (st.isFile() && !st.isSymbolicLink()) {
-        process.stdout.write(JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: 'UserPromptSubmit',
-            additionalContext: `[MEMENTO] Journal at ${journalPath} is corrupt or unreadable. ` +
-              `Use the Write tool to create a fresh journal at that path. ` +
-              `Minimal structure: {"mission":"[current goal]","mission_opened":"${new Date().toISOString()}",` +
-              `"mission_closed":null,"project":"${projectTag}","summary":null,"wip":null,"done":[],"plan":[]}`,
-          },
-        }));
-      }
-    } catch (e) { /* file doesn't exist — normal on first run, no action needed */ }
-    process.exit(0);
-  }
-
-  // Route based on journal state — four paths covering all active-work scenarios.
-  //
-  //   Path A — Active mission: per-turn reminder with mission, wip, last entry, staleness
-  //   Path B — Mission just closed (Signal 1): fires once via sidecar, then suppresses
-  //   Path C — No active mission, wip null (Signal 2): per-turn nudge, no sidecar
-  //   Path D — No active mission, wip set: per-turn brief showing current wip, no sidecar
-  //
-  // The UserPromptSubmit hook fires ONLY when the user submits a prompt — every execution
-  // is active work by definition. Sidecar suppression is correct only for one-time events
-  // (Path B: "mission just closed"). Paths C and D fire every turn; there is no idle state
-  // to protect against because the hook cannot fire when the session is idle.
-  const isActiveMission = !!(journal.mission && !journal.mission_closed);
-
-  if (isActiveMission) {
-    // Path A: Active mission — sync project tag, then emit staleness-aware reminder.
-    if (projectTag && projectTag !== 'default' && journal.project !== projectTag) {
-      journal.project = projectTag;
-      writeJournal(journalPath, journal);
-    }
-
-    const done = Array.isArray(journal.done) ? journal.done : (Array.isArray(journal.completed) ? journal.completed : []);
-    const lastEntry = done.length > 0 ? done[done.length - 1] : null;
-    const wip = journal.wip || (journal.in_progress ? journal.in_progress.task : null) || null;
-
-    // Staleness detection: if the last completed entry is > 30 min old the journal
-    // may be behind current work. Escalate the reminder until Claude writes again
-    // (a write resets the timestamp and the escalation stops automatically).
-    const STALE_REMINDER_MS = 30 * 60 * 1000;
-    const lastEntryMs = lastEntry && lastEntry.ts ? new Date(lastEntry.ts).getTime() : 0;
-    const isStale = !!(lastEntry && (Date.now() - lastEntryMs > STALE_REMINDER_MS));
-
-    let detail;
-    if (wip) {
-      // wip takes priority over staleness: active tracked work is more informative
-      // than a stale warning, and the wip description implicitly shows recency.
-      detail = ` | IN PROGRESS: "${wip}"`;
-    } else if (isStale) {
-      // Stale reminder fires once per 10-minute window, then suppresses until
-      // the cooldown expires. Each hook invocation is a new process — a sidecar
-      // file persists the last-fired timestamp between invocations.
-      // When Claude writes a new entry the isStale flag becomes false naturally
-      // (lastEntry.ts is fresh), so the cooldown logic is bypassed entirely.
-      const STALE_COOLDOWN_MS = 10 * 60 * 1000;
-      const staleRemindedPath = journalPath.replace(/\.json$/, '.stale-reminded');
-      let suppressStale = false;
-      try {
-        const stored = fs.readFileSync(staleRemindedPath, 'utf8').trim();
-        const storedMs = new Date(stored).getTime();
-        if (!isNaN(storedMs) && (Date.now() - storedMs < STALE_COOLDOWN_MS)) {
-          suppressStale = true;
-        }
-      } catch (e) { /* missing or unreadable — fire the reminder */ }
-
-      if (!suppressStale) {
-        const mins = Math.round((Date.now() - lastEntryMs) / 60000);
-        detail = ` | last task ${mins} min ago — journal may be stale, write completed tasks before proceeding`;
-        try {
-          fs.writeFileSync(staleRemindedPath, new Date().toISOString(), { mode: 0o600 });
-        } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
-      } else {
-        detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
-      }
-    } else if (lastEntry) {
-      detail = ` | last: "${lastEntry.act || lastEntry.task || ''}"`;
-    } else {
-      // No entries and no wip — session is completely unprotected against compaction.
-      // Escalate the reminder so Claude captures intent before any task runs.
-      detail = ' | no entries yet — open mission is unprotected, write journal now';
-    }
-
-    const reminder = `[MEMENTO: "${journal.mission}"${detail}] Update journal when information that compaction would destroy changes.`;
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: reminder,
-      },
-    }));
-
+  let prompt;
+  if (turn === 0) {
+    prompt = buildTurn1Prompt(journalPath, why, when);
   } else {
-    // No active mission. Covers: mission_closed is set, OR mission was never set (null/absent).
-    //
-    // Check Signal 1 sidecar first. The sidecar records the mission_closed timestamp and
-    // applies only when mission_closed is set. When mission was never set, skip Signal 1
-    // entirely (alreadyReminded = true) and go straight to Path C or D.
-    const remindedPath = journalPath.replace(/\.json$/, '.reminded');
-    let alreadyReminded = false;
-    if (journal.mission_closed) {
-      try {
-        const stored = fs.readFileSync(remindedPath, 'utf8').trim();
-        alreadyReminded = (stored === journal.mission_closed);
-      } catch (e) { /* file missing or unreadable — treat as not yet reminded */ }
-    } else {
-      // No mission_closed — mission was never set (bare journal, trigger #7, or null mission).
-      // Signal 1 does not apply. Skip directly to Path C or D.
-      alreadyReminded = true;
-    }
-
-    if (!alreadyReminded) {
-      // Path B (Signal 1): Mission just closed — emit once, then suppress via sidecar.
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: '[MEMENTO] Mission closed — open a new mission when ready.',
-        },
-      }));
-      try {
-        fs.writeFileSync(remindedPath, journal.mission_closed, { mode: 0o600 });
-      } catch (e) { /* silent — graceful degradation: reminder fires next turn too */ }
-    } else if (!journal.wip) {
-      // Path C (Signal 2): No active mission, no wip. Per-turn nudge — no sidecar.
-      // Fires every turn until Claude writes a wip entry. Since the hook only fires
-      // on user prompt submission, every execution here is active work.
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: '[MEMENTO: no active mission | no wip — write bare wip if doing task work (trigger #7)]',
-        },
-      }));
-    } else {
-      // Path D: No active mission, wip is set. Surface wip per-turn — no sidecar.
-      // Signal 1 has already fired (or never applied). No further suppression needed.
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: `[MEMENTO: no active mission | wip: "${journal.wip}" — update if changed]`,
-        },
-      }));
-    }
+    prompt = buildTurnNPrompt(journalPath, nextTurn, why);
   }
 
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: prompt,
+    },
+  }));
   process.exit(0);
+}
+
+// Turn 1: full prompt with schema template (Variants 1/2/3 based on journal state)
+function buildTurn1Prompt(journalPath, why, when) {
+  const header = `[MEMENTO] MANDATORY WRITE | Turn 1 | path: ${journalPath}`;
+
+  if (!why) {
+    // Variant 1: no prior journal (or old-schema journal)
+    return `${header}\nNo prior journal. Why are we doing this?\n` +
+           `Write your current why. [GUESS] always valid if intent is unclear.\n` +
+           `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
+  }
+
+  const isGuess  = why.startsWith('[GUESS]');
+  const prevWhen = when || '<prev-ISO>';
+
+  if (isGuess) {
+    // Variant 3: previous why was a [GUESS]
+    return `${header}\nWhy are we doing this? Previous: ${why}\n` +
+           `Write your current why. Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
+           `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+  }
+
+  // Variant 2: confirmed previous why
+  return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
+         `Write your current why. [GUESS] always valid. Same is fine.\n` +
+         `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+}
+
+// Turn N: compressed single-line prompt (Variants 4/5/6 based on journal state)
+function buildTurnNPrompt(journalPath, turnNum, why) {
+  const header = `[MEMENTO] MANDATORY WRITE | Turn ${turnNum} | path: ${journalPath}`;
+
+  if (!why) {
+    // Variant 6: no journal written yet (T1 was skipped — edge case)
+    return `${header}\nNo journal written yet. Why are we doing this? Write why+when. [GUESS] ok.\n` +
+           `{"why":"<intent or [GUESS]>","when":"<ISO>","why_history":[]}`;
+  }
+
+  const isGuess = why.startsWith('[GUESS]');
+  if (isGuess) {
+    // Variant 5: previous why is a [GUESS]
+    return `${header}\nPrevious: ${why} | Write why+when. Drop [GUESS] if you now have direct evidence. Same ok.`;
+  }
+
+  // Variant 4: confirmed previous why
+  return `${header}\nPrevious: "${why}" | Write why+when. [GUESS] ok. Same ok.`;
 }

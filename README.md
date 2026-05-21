@@ -5,7 +5,7 @@
 <h1 align="center">memento</h1>
 
 <p align="center">
-  <strong>preserves intent across context compaction — the why behind your work, not just the what</strong>
+  <strong>remembers the why behind your work, not just the what</strong>
 </p>
 
 <p align="center">

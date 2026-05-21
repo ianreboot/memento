@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.0 — 2026-05-21
+
+Complete schema replacement. The mission/done/plan/wip structure is replaced by a minimal intent journal: `{ why, when, why_history }`.
+
+**Core change — mandatory writes:** Every turn emits a MANDATORY WRITE prompt. Claude writes current intent before every response. [GUESS] is always valid — eliminates the ~0% voluntary-write compliance observed across 25+ real sessions with v0.3.x.
+
+**New schema:**
+- `why` (max 200 chars): current intent — what you are trying to accomplish and why
+- `when`: ISO timestamp of last write
+- `why_history`: array of previous `why` values (capped at 10, oldest dropped) — tracks how intent evolved
+
+**Removed:** mission lifecycle, done[] entries, plan[], wip, summary, rolling window, staleness collapse, /clear detection, project-shift detection
+**Removed env vars:** `MEMENTO_MAX_ENTRIES`, `MEMENTO_STALE_DAYS`
+**New in memento-config.js:** `getTurnSidecarPath()`, `sanitizeLine()` (now exported), `MAX_WHY_CHARS`, `MAX_WHY_HISTORY`
+**Turn sidecar:** `.turn` file alongside journal tracks turn number for T1 (full prompt) vs T2+ (compressed prompt) discrimination
+**PreCompact hook:** now always fires (previously conditional on `wip=null`)
+**Migration:** pre-v0.4.0 journals (no `why` field) are treated as non-existent. Claude will be prompted to start fresh.
+**Tests:** 58 passing (v0.3.x-specific tests removed; new tests cover v0.4.0 schema validation, sidecar path, history capping)
+
 ## v0.3.1 — 2026-05-20
 
 - **Signal 2 — per-turn no-mission reminder**: `memento-tracker.js` now emits a per-turn `[MEMENTO: no active mission | no wip — write bare wip if doing task work (trigger #7)]` reminder when no active mission is open and `wip` is null. No sidecar suppression. Fires every turn until Claude writes a wip entry. Covers all three no-mission states: `mission_closed` set (after Signal 1 fires), mission never set, and bare null-mission journals from trigger #7.

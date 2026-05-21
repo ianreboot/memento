@@ -14,7 +14,7 @@ When two Claude Code windows work on the same project simultaneously, journal wr
 
 The primary journal write path (Claude using the Write tool as instructed by SKILL.md) does not use the atomic temp+rename write in `writeJournal()`. If Claude Code crashes mid-write, the journal file may be partially written and unreadable. The hooks detect this (readJournal returns null on invalid JSON) and start fresh, losing prior state.
 
-**Mitigation**: The activate hook's stale-collapse write IS atomic. The next session start will attempt recovery.
+**Mitigation**: Because writes are mandatory every turn, the journal is at most one turn stale at any crash point. The next session start will prompt Claude to re-establish current intent.
 
 ## 3. Windows symlink protection gap
 

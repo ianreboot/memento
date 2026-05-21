@@ -9,38 +9,41 @@ Memento has three components that work together:
 ### 1. The SKILL.md (`skills/memento/SKILL.md`)
 
 This is loaded into Claude's context at every session start (the skill is always active). It instructs Claude on:
-- When and how to write journal entries
-- The fidelity rule (only record what was stated or observed)
-- Entry format and compression
-- Mission lifecycle
-- Recovery behavior after compaction
+- The MANDATORY WRITE rule: write `{why, when, why_history}` before every response
+- When [GUESS] is valid (always) and when to drop it (only on direct evidence)
+- When to update `why_history` (only when `why` changes)
 
 **Claude is the only journal writer.** The SKILL.md is what makes Claude write. If you want to change what gets journaled or how, edit SKILL.md.
 
 ### 2. The hooks (`hooks/`)
 
-Two hooks run automatically on every Claude Code session:
+Three hooks run automatically on every Claude Code session:
 
 **`memento-activate.js`** (SessionStart):
 - Reads the journal for the current instance
-- Prunes stale entries if needed
-- Formats the journal as plain text
+- Resets the turn counter sidecar (0 for fresh start, 1 for recovery)
 - Writes to stdout — Claude Code injects this as hidden system context
-- Full injection on `source: "compact"` or `"resume"`. Brief summary on `source: "startup"`.
+- Recovery prompt on `source: "compact"` or `"resume"`. Turn 1 prompt on `source: "startup"`.
 
 **`memento-tracker.js`** (UserPromptSubmit):
-- Reads the user's prompt from stdin
-- Detects `/clear` and project-shift language → marks mission closed
-- Emits a per-turn reminder via `hookSpecificOutput.additionalContext` (mission name, state, last/wip task)
-- This reminder is invisible to the user
+- Reads the turn counter sidecar
+- Emits a MANDATORY WRITE prompt: full format on Turn 1, compressed on Turn 2+
+- Increments the turn counter
+- This prompt is invisible to the user
+
+**`memento-precompact.js`** (PreCompact):
+- Fires before context compaction
+- Emits "MANDATORY WRITE — LAST WRITE OPPORTUNITY" to stdout
+- Always fires — gives Claude one final chance to capture current intent before the compaction window closes
 
 **`memento-config.js`** (shared utilities):
 - Instance tag: `getInstanceTag()` → OS username → "default" (journal file path; override with `MEMENTO_INSTANCE_TAG`)
 - Project tag: `getProjectTag()` → git root basename → cwd basename → "default" (informational only; common names blocklisted)
-- `readJournal()` — symlink-safe, size-capped JSON read
-- `writeJournal()` — atomic temp+rename, symlink-safe, 0600 permissions
-- `pruneJournal()` — rolling window, staleness collapse
-- `formatJournalForInjection()` — converts JSON to plain-text injection format
+- Turn sidecar path: `getTurnSidecarPath(journalPath)` → replaces `.json` with `.turn`
+- `readJournal()` — symlink-safe, size-capped JSON read; returns null for any journal without a `why` field
+- `writeJournal()` — atomic temp+rename, symlink-safe, 0600 permissions; normalizes and caps `why` and `why_history`
+- `sanitizeLine()` — collapses newlines and excess whitespace in string fields
+- Constants: `MAX_WHY_CHARS` (200), `MAX_WHY_HISTORY` (10), `MAX_JOURNAL_BYTES`
 
 ### Hook definition file
 
@@ -61,27 +64,17 @@ The file is written by Claude (via the Write tool) and read by hooks. Hook reads
 
 ```json
 {
-  "mission":        "string (max 400 chars — verbatim request + constraints + done-when)",
-  "mission_opened": "ISO 8601",
-  "mission_closed": "ISO 8601 or null",
-  "project":        "string",
-  "summary":        "string or null (max 300 chars — rolling summary of pruned entries)",
-  "wip":            "string or null (max 150 chars — mid-task state or blocker)",
-  "done": [
-    {
-      "act":    "string (max 80 chars)",
-      "result": "string (max 120 chars)",
-      "ctx":    "string (max 120 chars) — typed: user:... | tool:... | note:...",
-      "ts":     "ISO 8601"
-    }
-  ],
-  "plan": ["string (max 150 chars each — action + concrete anchor)"]
+  "why":         "string (max 200 chars) — current intent, may start with [GUESS]",
+  "when":        "ISO 8601 — timestamp of last write",
+  "why_history": [
+    {"w": "string — previous why value", "t": "ISO 8601"}
+  ]
 }
 ```
 
-Rolling window: max 6 `done` entries (configurable via `MEMENTO_MAX_ENTRIES`, range 4–24). When the limit is exceeded, the oldest entry is folded into `summary`. Max 3 `plan` items. File must stay under 6KB.
+`why_history` is appended only when `why` changes value. Capped at 10 entries — oldest dropped when limit is exceeded. File must stay under 6KB.
 
-**Backward compatibility**: journals written by v0.1.x use `completed`/`upcoming`/`task`/`in_progress`/`state`/`state_reason`. These are read transparently by `readJournal()` and normalized to new names on the next write. No migration needed.
+**Schema validation**: `readJournal()` returns null for any journal missing the `why` field — this includes all pre-v0.4.0 journals. A null result triggers a fresh-start prompt, and Claude creates a new v0.4.0 journal.
 
 ## Setting Up for Development
 
@@ -97,8 +90,8 @@ bash hooks/install.sh
 # Test the SessionStart hook directly
 echo '{"source":"compact"}' | node hooks/memento-activate.js
 
-# Test the UserPromptSubmit hook
-echo '{"prompt":"/clear"}' | node hooks/memento-tracker.js
+# Test the UserPromptSubmit hook (Turn 1, no prior journal)
+echo '{}' | node hooks/memento-tracker.js
 
 # Inspect a journal
 cat ~/.claude/.memento/<username>.json | python3 -m json.tool
@@ -115,7 +108,7 @@ Since memento is a Claude Code plugin, full end-to-end testing requires Claude C
 2. **Journal utilities**: Write a small test script that calls functions from `memento-config.js` directly.
 3. **Integration**: Install hooks, open Claude Code, complete some tasks, trigger compaction manually (by filling context), and verify recovery.
 
-Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (51 tests total).
+Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (58 tests total).
 
 ## Contribution Guidelines
 
@@ -156,9 +149,9 @@ Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook i
 
 ## Project Philosophy
 
-Memento solves one problem: surviving context compaction. It does not try to be a general-purpose memory system. Permanent project knowledge belongs in `CLAUDE.md`. Temporal session notes belong in `MEMORY.md`. Memento owns only the task-level, mission-scoped state that lives between those layers.
+Memento solves one problem: surviving context compaction with correct intent. It does not try to be a general-purpose memory system. Permanent project knowledge belongs in `CLAUDE.md`. Temporal session notes belong in `MEMORY.md`. Memento owns only the intent-level state — the why — that compaction destroys and that neither of those layers captures automatically.
 
-Keep it simple. Keep it fast. Keep it honest (fidelity rule). Keep it invisible.
+Keep it simple. Keep it fast. Keep it invisible.
 
 ## License
 

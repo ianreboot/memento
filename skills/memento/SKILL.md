@@ -1,11 +1,9 @@
 ---
 name: memento
 description: >
-  Persistent task memory across context compaction. Maintains a rolling journal of
-  completed tasks, their results, and causal context so Claude can recover mid-task
-  after compaction without human intervention. Hook injection is automatic and invisible.
-  Journal writes require Claude to use the Write tool when information changes that
-  compaction would destroy — no slash command needed.
+  Remembers the why behind your work across context compaction. Mandatory per-turn
+  writes capture current intent before every response. Hook injection is automatic
+  and invisible. No slash command needed.
 ---
 
 # Memento

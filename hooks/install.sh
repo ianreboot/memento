@@ -128,7 +128,7 @@ echo "Installing memento..."
 mkdir -p "$HOOKS_DIR"
 
 for f in "${HOOK_FILES[@]}"; do
-  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/$f" ]; then
+  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/$f" ] && [ "$SCRIPT_DIR" != "$HOOKS_DIR" ]; then
     cp "$SCRIPT_DIR/$f" "$HOOKS_DIR/$f"
   else
     curl -fsSL "$REPO_RAW/$f" -o "$HOOKS_DIR/$f"

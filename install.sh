@@ -24,7 +24,7 @@ fi
 echo "Installing memento..."
 mkdir -p "$HOOKS_DIR"
 
-HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "install.sh")
+HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "memento-precompact.js" "install.sh")
 
 for f in "${HOOK_FILES[@]}"; do
   curl -fsSL "$REPO_RAW/$f" -o "$HOOKS_DIR/$f"

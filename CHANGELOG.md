@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.2 — 2026-05-22
+
+Installer bug fixes.
+
+- **Fix same-file copy error in `hooks/install.sh`**: When the top-level `install.sh` delegates to `hooks/install.sh`, `SCRIPT_DIR` resolves to the same path as `HOOKS_DIR` (both `~/.claude/hooks/`). The `cp` command fails with "are the same file". Fixed by adding a `SCRIPT_DIR != HOOKS_DIR` guard — when paths match, falls through to curl download. Affected `--force` upgrades and fresh `curl | bash` installs.
+- **Add missing `memento-precompact.js` to top-level installer**: The top-level `install.sh` download list had 6 files but `hooks/install.sh` expected 7. The PreCompact hook was never downloaded by the top-level script, causing the delegated installer to fall through to curl for that file (or skip it if offline).
+
 ## v0.4.1 — 2026-05-22
 
 Why-quality guidance across all hook prompts and session-close outcome capture in SKILL.md.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.4.0)
+// memento — SessionStart hook (v0.4.1)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -81,7 +81,7 @@ function buildRecoveryPrompt(journal, journalPath) {
 
   if (!why) {
     return `${header}\nNo prior journal. Why are we doing this?\n` +
-           `MANDATORY WRITE — Write your current why before your first tool call. [GUESS] always valid.\n` +
+           `MANDATORY WRITE — Write your current why (purpose, not action) before your first tool call. [GUESS] always valid.\n` +
            `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
   }
 
@@ -96,7 +96,7 @@ function buildRecoveryPrompt(journal, journalPath) {
     : '';
 
   return `${header}\nWhy: ${prevLabel}${whenStr}${arcStr}\n` +
-         `MANDATORY WRITE — Why are we doing this? Confirm or update why before your first tool call. [GUESS] always valid.\n` +
+         `MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not action) before your first tool call. [GUESS] always valid.\n` +
          `{"why":"...","when":"<ISO>","why_history":[...existing entries...]}`;
 }
 
@@ -109,7 +109,7 @@ function buildTurn1Prompt(journal, journalPath) {
   if (!why) {
     // Variant 1: No journal (or old-schema journal treated as non-existent)
     return `${header}\nNo prior journal. Why are we doing this?\n` +
-           `Write your current why. [GUESS] always valid if intent is unclear.\n` +
+           `Write your current why (purpose, not action). [GUESS] always valid if intent is unclear.\n` +
            `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
   }
 
@@ -119,12 +119,12 @@ function buildTurn1Prompt(journal, journalPath) {
   if (isGuess) {
     // Variant 3: [GUESS] why — encourage upgrade if evidence is available
     return `${header}\nWhy are we doing this? Previous: ${why}\n` +
-           `Write your current why. Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
+           `Write your current why (purpose, not action). Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
            `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
   }
 
   // Variant 2: Confirmed why — cheapest write (same is fine)
   return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
-         `Write your current why. [GUESS] always valid. Same is fine.\n` +
+         `Write your current why (purpose, not action). [GUESS] always valid. Same is fine.\n` +
          `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.1 — 2026-05-22
+
+Why-quality guidance across all hook prompts and session-close outcome capture in SKILL.md.
+
+- **"(purpose, not action)" hint in all hook prompts**: Every `Write why+when` instruction across all 10 prompt variants (tracker T2+ x3, activate T1/recovery x5, precompact x2) now includes `(purpose, not action)`. Addresses observed drift where the `why` field captures action descriptions ("writing calibration doc") rather than intent ("benchmarking planning quality to identify brain/skill fixes"). The hint fires at the moment of writing with near-zero cognitive overhead (~3 tokens per prompt).
+- **Session-close outcome instruction**: SKILL.md now includes: if the session is ending, update why with the outcome ("Done: X. Next: Y." or "Stopped mid-X, resume at Y."). Addresses the restart recovery gap where a new session cannot determine whether the previous session succeeded, failed, or was abandoned. Best-effort behavioral instruction — works for graceful session endings, no mechanism for abrupt terminations.
+- **No schema changes.** The why+when+why_history schema is unchanged.
+- **Version bumps**: plugin.json and marketplace.json updated to 0.4.1.
+
 ## v0.4.0 — 2026-05-21
 
 Complete schema replacement. The mission/done/plan/wip structure is replaced by a minimal intent journal: `{ why, when, why_history }`.

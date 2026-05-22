@@ -17,3 +17,4 @@ before your next tool call. Always pick one — never skip:
 [GUESS] is always valid. Never write null. Drop [GUESS] only if you have direct evidence (user statement, task description).
 Append to why_history only when the why value changes (not on same-value rewrites). Cap 10 entries; drop oldest when exceeded.
 why max 200 characters. Journal path is always in the [MEMENTO] header — do not derive it yourself.
+If the session is ending (user says goodbye, task complete, no more work), update why: "Done: X. Next: Y." or "Stopped mid-X, resume at Y."

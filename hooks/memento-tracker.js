@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.4.0)
+// memento — UserPromptSubmit hook (v0.4.1)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -106,16 +106,16 @@ function buildTurnNPrompt(journalPath, turnNum, why) {
 
   if (!why) {
     // Variant 6: no journal written yet (T1 was skipped — edge case)
-    return `${header}\nNo journal written yet. Why are we doing this? Write why+when. [GUESS] ok.\n` +
+    return `${header}\nNo journal written yet. Why are we doing this? Write why+when (purpose, not action). [GUESS] ok.\n` +
            `{"why":"<intent or [GUESS]>","when":"<ISO>","why_history":[]}`;
   }
 
   const isGuess = why.startsWith('[GUESS]');
   if (isGuess) {
     // Variant 5: previous why is a [GUESS]
-    return `${header}\nPrevious: ${why} | Write why+when. Drop [GUESS] if you now have direct evidence. Same ok.`;
+    return `${header}\nPrevious: ${why} | Write why+when (purpose, not action). Drop [GUESS] if you now have direct evidence. Same ok.`;
   }
 
   // Variant 4: confirmed previous why
-  return `${header}\nPrevious: "${why}" | Write why+when. [GUESS] ok. Same ok.`;
+  return `${header}\nPrevious: "${why}" | Write why+when (purpose, not action). [GUESS] ok. Same ok.`;
 }

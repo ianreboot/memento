@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.4.0)
+// memento — PreCompact hook (v0.4.1)
 //
 // Runs before context compaction. Always emits a MANDATORY WRITE prompt so
 // Claude records its current 'why' before context clears. The write is
@@ -43,14 +43,14 @@ function main() {
   let message;
   if (!why) {
     message = `${header}\nNo prior journal. Why are we doing this?\n` +
-              `Always write why+when before context clears. [GUESS] always valid.\n` +
+              `Always write why+when (purpose, not action) before context clears. [GUESS] always valid.\n` +
               `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
   } else {
     const isGuess   = why.startsWith('[GUESS]');
     const prevLabel = isGuess ? why : `"${why}"`;
     const prevWhen  = when || '<prev-ISO>';
     message = `${header}\nWhy are we doing this? Previous: ${prevLabel}\n` +
-              `Always write why+when before context clears. Append to why_history only if why changed. [GUESS] always valid.\n` +
+              `Always write why+when (purpose, not action) before context clears. Append to why_history only if why changed. [GUESS] always valid.\n` +
               `{"why":"...","when":"<ISO>","why_history":[...append {"w":"${why}","t":"${prevWhen}"} only if changed...]}`;
   }
 

@@ -139,7 +139,7 @@ done
 # Install SKILL.md — Claude's journaling instructions (how to write entries)
 SKILLS_DIR="$CLAUDE_DIR/skills/memento"
 mkdir -p "$SKILLS_DIR"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/memento/SKILL.md" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/memento/SKILL.md" ] && [ "$SCRIPT_DIR" != "$HOOKS_DIR" ]; then
   cp "$SCRIPT_DIR/../skills/memento/SKILL.md" "$SKILLS_DIR/SKILL.md"
 else
   curl -fsSL "https://raw.githubusercontent.com/ianreboot/memento/main/skills/memento/SKILL.md" -o "$SKILLS_DIR/SKILL.md"

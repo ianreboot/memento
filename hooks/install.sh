@@ -128,7 +128,9 @@ echo "Installing memento..."
 mkdir -p "$HOOKS_DIR"
 
 for f in "${HOOK_FILES[@]}"; do
-  if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/$f" ] && [ "$SCRIPT_DIR" != "$HOOKS_DIR" ]; then
+  if [ "$SCRIPT_DIR" = "$HOOKS_DIR" ] && [ -f "$HOOKS_DIR/$f" ]; then
+    : # Already in place (top-level installer pre-downloaded)
+  elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/$f" ]; then
     cp "$SCRIPT_DIR/$f" "$HOOKS_DIR/$f"
   else
     curl -fsSL "$REPO_RAW/$f" -o "$HOOKS_DIR/$f"
@@ -139,7 +141,9 @@ done
 # Install SKILL.md — Claude's journaling instructions (how to write entries)
 SKILLS_DIR="$CLAUDE_DIR/skills/memento"
 mkdir -p "$SKILLS_DIR"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/memento/SKILL.md" ] && [ "$SCRIPT_DIR" != "$HOOKS_DIR" ]; then
+if [ "$SCRIPT_DIR" = "$HOOKS_DIR" ] && [ -f "$SKILLS_DIR/SKILL.md" ]; then
+  : # Already in place (top-level installer pre-downloaded)
+elif [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../skills/memento/SKILL.md" ]; then
   cp "$SCRIPT_DIR/../skills/memento/SKILL.md" "$SKILLS_DIR/SKILL.md"
 else
   curl -fsSL "https://raw.githubusercontent.com/ianreboot/memento/main/skills/memento/SKILL.md" -o "$SKILLS_DIR/SKILL.md"

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — shared configuration and journal utilities (v0.5.0)
+// memento — shared configuration and journal utilities (v0.5.1)
 //
 // Handles:
 //   - Instance tag derivation (which journal file to use; one file per OS user)
@@ -67,6 +67,10 @@ const MAX_BRIDGE_ERR_CHARS  = 300;
 // Trigger thresholds for [BRIDGE] directive
 const BRIDGE_TRIGGER_PCT  = 74;   // % of context window used — 10pp before ~84% compaction
 const BRIDGE_SPIKE_TOKENS = 3000; // cache_write spike guard threshold
+
+// Minimum ctx% drop between turns that unambiguously signals a compaction occurred.
+// Context only grows between turns — any drop is compaction. 20pp margin for safety.
+const CTX_DROP_THRESHOLD = 20;
 
 // ---------------------------------------------------------------------------
 // Instance tag derivation (used for journal FILE PATH)
@@ -148,6 +152,27 @@ function getJournalPath(claudeDir, instanceTag) {
 // This enables T1 vs T2+ discrimination without reading the journal.
 function getTurnSidecarPath(journalPath) {
   return journalPath.replace(/\.json$/, '.turn');
+}
+
+// Returns the path to the last-ctx-pct sidecar file.
+// Stores the ctx% from the previous turn as a plain float string.
+// Written every turn by UserPromptSubmit. Used for compaction drop detection.
+function getLastCtxPath(journalPath) {
+  return journalPath.replace(/\.json$/, '.last_ctx');
+}
+
+// Read the last persisted ctx% (float) or null if unavailable/invalid.
+function readLastCtxPct(lastCtxPath) {
+  try {
+    const val = parseFloat(fs.readFileSync(lastCtxPath, 'utf8').trim());
+    return isNaN(val) ? null : val;
+  } catch (e) { return null; }
+}
+
+// Persist the current ctx% for the next turn's drop detection.
+// Same simple pattern as the turn sidecar (plain value, not security-critical).
+function writeLastCtxPct(lastCtxPath, pct) {
+  try { fs.writeFileSync(lastCtxPath, String(pct), { mode: 0o600 }); } catch (e) { /* silent */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +540,9 @@ module.exports = {
   getClaudeDir,
   getJournalPath,
   getTurnSidecarPath,
+  getLastCtxPath,
+  readLastCtxPct,
+  writeLastCtxPct,
   sanitizeLine,
   readJournal,
   writeJournal,
@@ -531,6 +559,7 @@ module.exports = {
   CONTEXT_WINDOW,
   BRIDGE_TRIGGER_PCT,
   BRIDGE_SPIKE_TOKENS,
+  CTX_DROP_THRESHOLD,
   MAX_BRIDGE_NEXT_CHARS,
   MAX_BRIDGE_FILES,
   MAX_BRIDGE_FILE_CHARS,

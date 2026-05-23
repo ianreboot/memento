@@ -11,6 +11,9 @@ const {
   getInstanceTag,
   getJournalPath,
   getTurnSidecarPath,
+  getLastCtxPath,
+  readLastCtxPct,
+  writeLastCtxPct,
   sanitizeLine,
   readJournal,
   writeJournal,
@@ -24,6 +27,7 @@ const {
   MAX_WHY_HISTORY,
   MAX_BRIDGE_NEXT_CHARS,
   MAX_BRIDGE_FILES,
+  CTX_DROP_THRESHOLD,
 } = require('../hooks/memento-config.js');
 
 let passed = 0;
@@ -409,6 +413,64 @@ test('deleteCtxBridge removes file, returns silently on missing', () => {
   assert.ok(!fs.existsSync(p), 'file must be gone after delete');
   // Second call on missing file must not throw
   assert.doesNotThrow(() => deleteCtxBridge(p));
+});
+
+// ---------------------------------------------------------------------------
+// last_ctx helpers
+// ---------------------------------------------------------------------------
+
+console.log('\nlast_ctx helpers');
+
+test('getLastCtxPath returns .last_ctx path alongside .json', () => {
+  const journalPath = '/some/dir/.memento/alice.json';
+  assert.strictEqual(getLastCtxPath(journalPath), '/some/dir/.memento/alice.last_ctx');
+});
+
+test('readLastCtxPct returns null for missing file', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'missing.last_ctx');
+  assert.strictEqual(readLastCtxPct(p), null);
+});
+
+test('readLastCtxPct returns null for invalid content', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'bad.last_ctx');
+  fs.writeFileSync(p, 'not a number');
+  assert.strictEqual(readLastCtxPct(p), null);
+});
+
+test('readLastCtxPct returns float from valid file', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'valid.last_ctx');
+  fs.writeFileSync(p, '78.5');
+  const val = readLastCtxPct(p);
+  assert.ok(val !== null, 'must return value');
+  assert.ok(Math.abs(val - 78.5) < 0.001, `expected 78.5, got ${val}`);
+});
+
+test('writeLastCtxPct + readLastCtxPct round-trip', () => {
+  const dir = tmpDir();
+  const journalPath = getJournalPath(dir, 'testuser');
+  const p = getLastCtxPath(journalPath);
+  writeLastCtxPct(p, 65.3);
+  const val = readLastCtxPct(p);
+  assert.ok(val !== null, 'must read back written value');
+  assert.ok(Math.abs(val - 65.3) < 0.001, `expected 65.3, got ${val}`);
+});
+
+test('writeLastCtxPct creates file with 0600 permissions', () => {
+  const dir = tmpDir();
+  const journalPath = getJournalPath(dir, 'testuser');
+  const p = getLastCtxPath(journalPath);
+  writeLastCtxPct(p, 42.0);
+  const stat = fs.statSync(p);
+  const mode = stat.mode & 0o777;
+  assert.strictEqual(mode, 0o600, `permissions must be 0600, got 0${mode.toString(8)}`);
+});
+
+test('CTX_DROP_THRESHOLD is a number >= 10', () => {
+  assert.ok(typeof CTX_DROP_THRESHOLD === 'number', 'must be a number');
+  assert.ok(CTX_DROP_THRESHOLD >= 10, `must be >= 10, got ${CTX_DROP_THRESHOLD}`);
 });
 
 // ---------------------------------------------------------------------------

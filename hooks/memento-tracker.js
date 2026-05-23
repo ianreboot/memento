@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.5.0)
+// memento — UserPromptSubmit hook (v0.5.1)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -21,13 +21,19 @@ const {
   getClaudeDir,
   getJournalPath,
   getTurnSidecarPath,
+  getLastCtxPath,
+  readLastCtxPct,
+  writeLastCtxPct,
   readJournal,
   getCtxBridgePath,
   findLatestJsonl,
   readLastUsage,
+  readCtxBridge,
+  deleteCtxBridge,
   CONTEXT_WINDOW,
   BRIDGE_TRIGGER_PCT,
   BRIDGE_SPIKE_TOKENS,
+  CTX_DROP_THRESHOLD,
 } = require('./memento-config');
 
 let rawInput = '';
@@ -77,7 +83,23 @@ function run(rawInput) {
     }
   }
 
-  const bridgePath   = getCtxBridgePath(claudeDir);
+  const bridgePath  = getCtxBridgePath(claudeDir);
+  const lastCtxPath = getLastCtxPath(journalPath);
+
+  // Drop detection: a significant ctx% drop means a compaction just occurred.
+  // Context only grows between turns — any drop ≥ CTX_DROP_THRESHOLD is unambiguous.
+  // Covers both inline auto-compaction and true session restarts.
+  const lastCtxPct = readLastCtxPct(lastCtxPath);
+  let ctxBridgeStr = '';
+  if (usedPct !== null && lastCtxPct !== null && (lastCtxPct - usedPct) >= CTX_DROP_THRESHOLD) {
+    const bridge = readCtxBridge(bridgePath);
+    if (bridge) {
+      ctxBridgeStr = buildBridgeInjection(bridge) + '\n';
+      deleteCtxBridge(bridgePath);
+    }
+  }
+
+  // bridgeExists computed AFTER potential deletion above
   const bridgeExists = (() => {
     try { return fs.lstatSync(bridgePath).isFile(); } catch (e) { return false; }
   })();
@@ -94,6 +116,11 @@ function run(rawInput) {
     prompt = buildTurnNPrompt(journalPath, nextTurn, why);
   }
 
+  // Prepend [CTX BRIDGE] recovery context if a compaction was detected
+  if (ctxBridgeStr) {
+    prompt = ctxBridgeStr + prompt;
+  }
+
   if (shouldBridge) {
     prompt += '\n' + buildBridgeDirective(bridgePath, usedPct);
   }
@@ -104,6 +131,10 @@ function run(rawInput) {
       additionalContext: prompt,
     },
   }));
+
+  // Persist current ctx% for next turn's drop detection
+  if (usedPct !== null) writeLastCtxPct(lastCtxPath, usedPct);
+
   process.exit(0);
 }
 
@@ -132,6 +163,15 @@ function buildTurn1Prompt(journalPath, why, when) {
   return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
          `Write your current why. [GUESS] always valid. Same is fine.\n` +
          `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+}
+
+// [CTX BRIDGE] injection — prepended to prompt when drop detection fires on compaction recovery
+function buildBridgeInjection(bridge) {
+  const filesStr = bridge.files && bridge.files.length > 0 ? bridge.files.join(', ') : '(none)';
+  const errStr   = bridge.err ? ` | Error: ${bridge.err}` : '';
+  return `[CTX BRIDGE] Written at ${bridge.pct ?? '?'}% | Files: ${filesStr}\n` +
+         `Next: "${bridge.next}"${errStr}\n` +
+         `Read the listed files before resuming work.`;
 }
 
 // [BRIDGE] directive — appended to prompt when context is ≥74% or cache-write spike detected

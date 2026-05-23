@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.5.0)
+// memento — SessionStart hook (v0.5.1)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -25,9 +25,6 @@ const {
   getJournalPath,
   getTurnSidecarPath,
   readJournal,
-  getCtxBridgePath,
-  readCtxBridge,
-  deleteCtxBridge,
 } = require('./memento-config');
 
 let rawInput = '';
@@ -67,10 +64,7 @@ function run(rawInput) {
 
   let output = '';
   if (isRecovery) {
-    const bridgePath = getCtxBridgePath(claudeDir);
-    const bridge     = readCtxBridge(bridgePath);
-    output = buildRecoveryPrompt(journal, journalPath, bridge);
-    if (bridge) deleteCtxBridge(bridgePath);
+    output = buildRecoveryPrompt(journal, journalPath);
   } else {
     output = buildTurn1Prompt(journal, journalPath);
   }
@@ -80,17 +74,18 @@ function run(rawInput) {
 }
 
 // Variant 8: Recovery — post-compaction session start
-function buildRecoveryPrompt(journal, journalPath, bridge) {
+// Note: [CTX BRIDGE] injection moved to memento-tracker.js (v0.5.1).
+// The tracker detects compaction via ctx% drop and injects/deletes the bridge
+// on the first user message — covering both inline and true-restart compaction.
+function buildRecoveryPrompt(journal, journalPath) {
   const header = `[MEMENTO] Recovering | path: ${journalPath}`;
   const why    = journal && typeof journal.why === 'string' ? journal.why : null;
   const when   = journal && journal.when ? journal.when : null;
 
   if (!why) {
-    const bridgeStr = bridge ? buildBridgeInjection(bridge) : '';
     return `${header}\nNo prior journal. Why are we doing this?\n` +
            `MANDATORY WRITE — Write your current why (purpose, not action) before your first tool call. [GUESS] always valid.\n` +
-           `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}` +
-           bridgeStr;
+           `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
   }
 
   const isGuess   = why.startsWith('[GUESS]');
@@ -103,20 +98,9 @@ function buildRecoveryPrompt(journal, journalPath, bridge) {
     ? '\nArc: ' + [...history.map(e => `"${e.w}"`), `"${why}"`].join(' \u2192 ')
     : '';
 
-  const bridgeStr = bridge ? buildBridgeInjection(bridge) : '';
-
-  return `${header}\nWhy: ${prevLabel}${whenStr}${arcStr}${bridgeStr}\n` +
+  return `${header}\nWhy: ${prevLabel}${whenStr}${arcStr}\n` +
          `MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not action) before your first tool call. [GUESS] always valid.\n` +
          `{"why":"...","when":"<ISO>","why_history":[...existing entries...]}`;
-}
-
-// Format ctx_bridge data for injection into the recovery prompt
-function buildBridgeInjection(bridge) {
-  const filesStr = bridge.files && bridge.files.length > 0 ? bridge.files.join(', ') : '(none)';
-  const errStr   = bridge.err ? ` | Error: ${bridge.err}` : '';
-  return `\n[CTX BRIDGE] Written at ${bridge.pct ?? '?'}% | Files: ${filesStr}\n` +
-         `Next: "${bridge.next}"${errStr}\n` +
-         `Read the listed files before resuming work.`;
 }
 
 // Variants 1/2/3: Turn 1 — fresh session start

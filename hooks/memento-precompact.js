@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.5.0)
+// memento — PreCompact hook (v0.5.1)
 //
 // Runs before context compaction. Always emits a MANDATORY WRITE prompt so
 // Claude records its current 'why' before context clears. The write is
@@ -16,7 +16,9 @@ const {
   getJournalPath,
   readJournal,
   getCtxBridgePath,
-  readCtxBridge,
+  findLatestJsonl,
+  readLastUsage,
+  CONTEXT_WINDOW,
 } = require('./memento-config.js');
 
 let rawInput = '';
@@ -37,6 +39,19 @@ function main() {
   const journalPath = getJournalPath(claudeDir, instanceTag);
   const journal     = readJournal(journalPath);
 
+  // Read current ctx% for inclusion in [BRIDGE] pct field
+  const jsonlPath = findLatestJsonl(claudeDir);
+  let usedPct = null;
+  if (jsonlPath) {
+    const usage = readLastUsage(jsonlPath);
+    if (usage) {
+      const total = (usage.input_tokens || 0) +
+                    (usage.cache_read_input_tokens || 0) +
+                    (usage.cache_creation_input_tokens || 0);
+      usedPct = total / CONTEXT_WINDOW * 100;
+    }
+  }
+
   const why  = journal && typeof journal.why === 'string' ? journal.why : null;
   const when = journal && journal.when ? journal.when : null;
 
@@ -56,13 +71,14 @@ function main() {
               `{"why":"...","when":"<ISO>","why_history":[...append {"w":"${why}","t":"${prevWhen}"} only if changed...]}`;
   }
 
-  // Definitive recovery instruction — both branches are actionable (Hypothesis A validated)
+  // Always emit [BRIDGE] directive — write the freshest possible bridge before compaction.
+  // Covers manual /compact at any % (including below 74% where tracker [BRIDGE] never fired).
   const bridgePath = getCtxBridgePath(claudeDir);
-  const bridge     = readCtxBridge(bridgePath);
-  const bridgeNote = bridge
-    ? `\nctx_bridge written at ${bridge.pct ?? '?'}% — on return: read it before your first tool call.`
-    : `\nOn return: read ctx_bridge.json if present — check before your first tool call.`;
+  const pctStr     = usedPct !== null ? Math.round(usedPct) : '?';
+  const bridgeDirective = `\n[BRIDGE] pre-compaction — write ctx_bridge.json now. path: ${bridgePath}\n` +
+    `List files you are actively editing, your exact next step, current error or null.\n` +
+    `{"files":["path1"],"next":"<exact next step>","err":null,"pct":${pctStr},"at":"<ISO>"}`;
 
-  process.stdout.write(message + bridgeNote + '\n');
+  process.stdout.write(message + bridgeDirective + '\n');
   process.exit(0);
 }

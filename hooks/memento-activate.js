@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.5.1)
+// memento — SessionStart hook (v0.5.4)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -25,6 +25,9 @@ const {
   getJournalPath,
   getTurnSidecarPath,
   readJournal,
+  getCtxBridgePath,
+  readCtxBridge,
+  deleteCtxBridge,
 } = require('./memento-config');
 
 let rawInput = '';
@@ -66,11 +69,26 @@ function run(rawInput) {
   if (isRecovery) {
     output = buildRecoveryPrompt(journal, journalPath);
   } else {
-    output = buildTurn1Prompt(journal, journalPath);
+    // startup: inject bridge written by SessionEnd on previous exit
+    const bridgePath = getCtxBridgePath(claudeDir);
+    const bridge     = readCtxBridge(bridgePath);
+    if (bridge) {
+      output = buildBridgeInjection(bridge) + '\n';
+      deleteCtxBridge(bridgePath);
+    }
+    output += buildTurn1Prompt(journal, journalPath);
   }
 
   if (output) process.stdout.write(output);
   process.exit(0);
+}
+
+function buildBridgeInjection(bridge) {
+  const filesStr = bridge.files && bridge.files.length > 0 ? bridge.files.join(', ') : '(none)';
+  const errStr   = bridge.err ? ` | Error: ${bridge.err}` : '';
+  return `[CTX BRIDGE] Written at ${bridge.pct ?? '?'}% | Files: ${filesStr}\n` +
+         `Next: "${bridge.next}"${errStr}\n` +
+         `Read the listed files before resuming work.`;
 }
 
 // Variant 8: Recovery — post-compaction session start

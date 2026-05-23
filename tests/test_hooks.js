@@ -395,8 +395,9 @@ function writeCtxBridgeFile(dir, overrides = {}) {
   return p;
 }
 
-// v0.5.1: bridge injection/deletion moved to tracker (drop detection).
-// activate no longer injects [CTX BRIDGE] or deletes bridge file.
+// v0.5.1: compact/resume bridge handling moved to tracker (drop detection).
+// v0.5.4: startup bridge inject+delete reinstated for exit/restart scenario
+//         (SessionEnd writes bridge; activate consumes it on next startup).
 
 test('compact + bridge present → [CTX BRIDGE] NOT injected by activate (tracker responsibility)', () => {
   const dir = tmpDir();
@@ -404,7 +405,7 @@ test('compact + bridge present → [CTX BRIDGE] NOT injected by activate (tracke
   writeCtxBridgeFile(dir);
   const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
   assert.strictEqual(r.status, 0);
-  assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'activate must not inject [CTX BRIDGE] in v0.5.1');
+  assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'activate must not inject [CTX BRIDGE] for compact source');
 });
 
 test('compact + bridge present → bridge NOT deleted by activate (tracker responsibility)', () => {
@@ -412,7 +413,7 @@ test('compact + bridge present → bridge NOT deleted by activate (tracker respo
   writeV4Journal(dir);
   const bridgePath = writeCtxBridgeFile(dir);
   runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
-  assert.ok(fs.existsSync(bridgePath), 'activate must NOT delete bridge in v0.5.1');
+  assert.ok(fs.existsSync(bridgePath), 'activate must NOT delete bridge for compact source');
 });
 
 test('recovery + bridge absent → output does NOT contain [CTX BRIDGE]', () => {
@@ -422,21 +423,31 @@ test('recovery + bridge absent → output does NOT contain [CTX BRIDGE]', () => 
   assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'must not show [CTX BRIDGE] when no bridge');
 });
 
-test('startup + bridge present → [CTX BRIDGE] NOT injected, file NOT deleted', () => {
+test('startup + bridge present → [CTX BRIDGE] injected and bridge deleted', () => {
   const dir = tmpDir();
   writeV4Journal(dir);
   const bridgePath = writeCtxBridgeFile(dir);
   const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
-  assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'startup must not inject bridge');
-  assert.ok(fs.existsSync(bridgePath), 'bridge must persist on startup');
+  assert.ok(r.stdout.includes('[CTX BRIDGE]'), 'startup must inject [CTX BRIDGE] from SessionEnd bridge');
+  assert.ok(r.stdout.includes('run tests'), 'must show next from bridge');
+  assert.ok(!fs.existsSync(bridgePath), 'bridge must be deleted after startup injection');
 });
 
-test('startup does not consume bridge (bridge persists for tracker drop detection)', () => {
+test('startup + bridge absent → [CTX BRIDGE] NOT injected', () => {
   const dir = tmpDir();
   writeV4Journal(dir);
-  const bridgePath = writeCtxBridgeFile(dir);
-  runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
-  assert.ok(fs.existsSync(bridgePath), 'bridge must persist after startup — tracker consumes it on drop');
+  const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'startup must not inject [CTX BRIDGE] when no bridge');
+});
+
+test('startup bridge: [CTX BRIDGE] appears before MANDATORY WRITE', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  writeCtxBridgeFile(dir);
+  const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+  const bridgePos   = r.stdout.indexOf('[CTX BRIDGE]');
+  const mandatoryPos = r.stdout.indexOf('MANDATORY WRITE');
+  assert.ok(bridgePos < mandatoryPos, '[CTX BRIDGE] must appear before MANDATORY WRITE');
 });
 
 // ---------------------------------------------------------------------------
@@ -838,6 +849,103 @@ test('precompact: output does not contain hedging language ("may have been" must
   const fakeClaude = writeFakeClaude(dir, '{"files":[],"next":"test","err":null}');
   const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
   assert.ok(!r.stdout.includes('may have been'), 'output must not hedge with "may have been"');
+});
+
+// ---------------------------------------------------------------------------
+// memento-sessionend.js (SessionEnd)
+// ---------------------------------------------------------------------------
+
+console.log('\nmemento-sessionend.js');
+
+test('sessionend: writes bridge via claude -p when no existing bridge', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir, { why: 'debugging auth' });
+  writeJsonlForPrecompact(dir);
+  const fakeClaude = writeFakeClaude(dir, '{"files":["/home/app.js"],"next":"fix the login bug","err":"TypeError"}');
+
+  const r = runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+  assert.strictEqual(r.status, 0);
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(fs.existsSync(bridgePath), 'bridge must be written by sessionend hook');
+  const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+  assert.deepStrictEqual(bridge.files, ['/home/app.js']);
+  assert.strictEqual(bridge.next, 'fix the login bug');
+  assert.strictEqual(bridge.err, 'TypeError');
+});
+
+test('sessionend: does NOT overwrite existing bridge', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  writeJsonlForPrecompact(dir);
+  const fakeClaude = writeFakeClaude(dir, '{"files":["/new.js"],"next":"new step","err":null}');
+
+  // Pre-existing bridge (e.g. written by tracker at 78%)
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'),
+    '{"files":["/old.js"],"next":"old step","err":null,"pct":78,"at":"2026-05-23T00:00:00Z"}');
+
+  runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridge = JSON.parse(fs.readFileSync(path.join(mementoDir, 'ctx_bridge.json'), 'utf8'));
+  assert.strictEqual(bridge.next, 'old step', 'must preserve existing bridge');
+});
+
+test('sessionend: falls back to journal.why if claude -p fails', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir, { why: 'implementing search feature' });
+  writeJsonlForPrecompact(dir);
+  const fakeClaude = writeFakeClaude(dir, '', { exitCode: 1 });
+
+  runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(fs.existsSync(bridgePath), 'fallback bridge must be written');
+  const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+  assert.strictEqual(bridge.next, 'implementing search feature');
+  assert.deepStrictEqual(bridge.files, []);
+});
+
+test('sessionend: no bridge written if no journal and claude -p unavailable', () => {
+  const dir = tmpDir();
+  const fakeClaude = writeFakeClaude(dir, '', { exitCode: 1 });
+
+  runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(!fs.existsSync(bridgePath), 'no bridge must be written without journal or claude -p');
+});
+
+test('sessionend: uses transcript_path from stdin when valid', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const jsonlPath = path.join(dir, 'custom.jsonl');
+  fs.writeFileSync(jsonlPath, '{"type":"assistant","message":{"usage":{"input_tokens":1}}}\n');
+  const fakeClaude = writeFakeClaude(dir, '{"files":["/src/api.js"],"next":"add rate limiting","err":null}');
+
+  runHook('memento-sessionend.js', JSON.stringify({ transcript_path: jsonlPath }),
+    { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(fs.existsSync(bridgePath), 'bridge must be written using stdin transcript_path');
+  const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+  assert.strictEqual(bridge.next, 'add rate limiting');
+});
+
+test('sessionend: silent fail on error (exits 0)', () => {
+  const dir = tmpDir();
+  const r = runHook('memento-sessionend.js', 'bad json', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0, 'must exit 0 on invalid stdin');
+});
+
+test('sessionend: no stdout output (session is ending, nothing to inject)', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const fakeClaude = writeFakeClaude(dir, '{"files":[],"next":"test","err":null}');
+  writeJsonlForPrecompact(dir);
+  const r = runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+  assert.strictEqual(r.stdout, '', 'sessionend must produce no stdout output');
 });
 
 // ---------------------------------------------------------------------------

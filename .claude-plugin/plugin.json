@@ -1,6 +1,6 @@
 {
   "name": "memento",
-  "version": "0.4.2",
+  "version": "0.5.4",
   "description": "Preserves intent across context compaction — the why behind your work, not just the what. Mandatory per-turn writes ensure Claude always has current intent before responding. Injected automatically at session start; invisible to user.",
   "author": {
     "name": "ianreboot",
@@ -36,7 +36,18 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/memento-precompact.js\"",
-            "timeout": 5000
+            "timeout": 35000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/memento-sessionend.js\"",
+            "timeout": 15000
           }
         ]
       }

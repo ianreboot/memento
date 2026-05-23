@@ -48,7 +48,7 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
 fi
 
 REPO_RAW="https://raw.githubusercontent.com/ianreboot/memento/main/hooks"
-HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "memento-precompact.js" "install.sh")
+HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "memento-precompact.js" "memento-sessionend.js" "install.sh")
 
 # ---------------------------------------------------------------------------
 # Uninstall
@@ -75,7 +75,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     MEMENTO_SETTINGS="$SETTINGS" node -e "
       const fs = require('fs');
       const s = JSON.parse(fs.readFileSync(process.env.MEMENTO_SETTINGS, 'utf8'));
-      for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact']) {
+      for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'SessionEnd']) {
         if (Array.isArray(s.hooks && s.hooks[event])) {
           s.hooks[event] = s.hooks[event].filter(e =>
             !(e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')))
@@ -166,7 +166,7 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" MEMENTO_FORCE="$FORC
   // stale entries from a previous install (e.g., pointing to a different path)
   // do not block the hasHook() guard and silently survive the upgrade.
   if (force) {
-    for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreCompact']) {
+    for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'SessionEnd']) {
       if (Array.isArray(s.hooks[ev])) {
         s.hooks[ev] = s.hooks[ev].filter(e =>
           !(e.hooks && e.hooks.some(h => h.command && h.command.includes('memento')))
@@ -182,6 +182,7 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" MEMENTO_FORCE="$FORC
   if (!s.hooks.SessionStart)     s.hooks.SessionStart    = [];
   if (!s.hooks.UserPromptSubmit) s.hooks.UserPromptSubmit = [];
   if (!s.hooks.PreCompact)       s.hooks.PreCompact       = [];
+  if (!s.hooks.SessionEnd)       s.hooks.SessionEnd       = [];
 
   let wired = false;
   if (!hasHook('SessionStart')) {
@@ -207,7 +208,16 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" MEMENTO_FORCE="$FORC
     s.hooks.PreCompact.push({ hooks: [{
       type: 'command',
       command: 'node \"' + hd + '/memento-precompact.js\"',
-      timeout: 5000,
+      timeout: 35000,
+    }]});
+    wired = true;
+  }
+
+  if (!hasHook('SessionEnd')) {
+    s.hooks.SessionEnd.push({ hooks: [{
+      type: 'command',
+      command: 'node \"' + hd + '/memento-sessionend.js\"',
+      timeout: 15000,
     }]});
     wired = true;
   }
@@ -232,10 +242,12 @@ MEMENTO_SETTINGS="$SETTINGS" MEMENTO_HOOKS_DIR="$HOOKS_DIR" node -e "
   const ss = check('SessionStart');
   const up = check('UserPromptSubmit');
   const pc = check('PreCompact');
+  const se = check('SessionEnd');
   console.log('  ' + (ss ? 'ok' : 'FAIL') + '  SessionStart      -> ' + hd);
   console.log('  ' + (up ? 'ok' : 'FAIL') + '  UserPromptSubmit  -> ' + hd);
   console.log('  ' + (pc ? 'ok' : 'FAIL') + '  PreCompact        -> ' + hd);
-  if (!ss || !up || !pc) {
+  console.log('  ' + (se ? 'ok' : 'FAIL') + '  SessionEnd        -> ' + hd);
+  if (!ss || !up || !pc || !se) {
     console.log('');
     console.log('  Hook wiring may be incorrect.');
     console.log('  Try: bash hooks/install.sh --force');

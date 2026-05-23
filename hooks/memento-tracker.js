@@ -34,6 +34,7 @@ const {
   BRIDGE_TRIGGER_PCT,
   BRIDGE_SPIKE_TOKENS,
   CTX_DROP_THRESHOLD,
+  WRITE_SCRIPT_PATH,
 } = require('./memento-config');
 
 let rawInput = '';
@@ -154,23 +155,22 @@ function buildTurn1Prompt(journalPath, why, when) {
     // Variant 1: no prior journal (or old-schema journal)
     return `${header}\nNo prior journal. Why are we doing this?\n` +
            `Write your current why (purpose, not action). [GUESS] always valid if intent is unclear.\n` +
-           `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
+           `node ${WRITE_SCRIPT_PATH} '<your why>'`;
   }
 
   const isGuess  = why.startsWith('[GUESS]');
-  const prevWhen = when || '<prev-ISO>';
 
   if (isGuess) {
     // Variant 3: previous why was a [GUESS]
     return `${header}\nWhy are we doing this? Previous: ${why}\n` +
            `Write your current why (purpose, not action). Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
-           `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+           `node ${WRITE_SCRIPT_PATH} '<your why>'`;
   }
 
   // Variant 2: confirmed previous why
   return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
          `Write your current why (purpose, not action). [GUESS] always valid. Same is fine.\n` +
-         `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+         `node ${WRITE_SCRIPT_PATH} '<your why>'`;
 }
 
 // [CTX BRIDGE] injection — prepended to prompt when drop detection fires on compaction recovery
@@ -195,16 +195,16 @@ function buildTurnNPrompt(journalPath, turnNum, why) {
 
   if (!why) {
     // Variant 6: no journal written yet (T1 was skipped — edge case)
-    return `${header}\nNo journal written yet. Why are we doing this? Write why+when (purpose, not action). [GUESS] ok.\n` +
-           `{"why":"<intent or [GUESS]>","when":"<ISO>","why_history":[]}`;
+    return `${header}\nNo journal written yet. Why are we doing this? [GUESS] ok.\n` +
+           `node ${WRITE_SCRIPT_PATH} '<your why>'`;
   }
 
   const isGuess = why.startsWith('[GUESS]');
   if (isGuess) {
     // Variant 5: previous why is a [GUESS]
-    return `${header}\nPrevious: ${why} | Write why+when (purpose, not action). Drop [GUESS] if you now have direct evidence. Same ok.`;
+    return `${header}\nPrevious: ${why} | node ${WRITE_SCRIPT_PATH} '<your why>'. Drop [GUESS] if you now have direct evidence. Same ok.`;
   }
 
   // Variant 4: confirmed previous why
-  return `${header}\nPrevious: "${why}" | Write why+when (purpose, not action). [GUESS] ok. Same ok.`;
+  return `${header}\nPrevious: "${why}" | node ${WRITE_SCRIPT_PATH} '<your why>'. [GUESS] ok. Same ok.`;
 }

@@ -76,6 +76,11 @@ const CTX_DROP_THRESHOLD = 20;
 // Override with MEMENTO_CLAUDE_BIN for testing or non-standard installs.
 const CLAUDE_BIN = process.env.MEMENTO_CLAUDE_BIN || 'claude';
 
+// Path to the write-why helper script (co-located with other hook scripts).
+// Hooks inject this path in MANDATORY WRITE prompts; Claude runs it with the why string
+// instead of writing JSON directly — eliminates the Read-before-Write requirement.
+const WRITE_SCRIPT_PATH = path.join(__dirname, 'memento-write-why.js');
+
 // ---------------------------------------------------------------------------
 // Instance tag derivation (used for journal FILE PATH)
 // ---------------------------------------------------------------------------
@@ -569,4 +574,5 @@ module.exports = {
   MAX_BRIDGE_FILE_CHARS,
   MAX_BRIDGE_ERR_CHARS,
   CLAUDE_BIN,
+  WRITE_SCRIPT_PATH,
 };

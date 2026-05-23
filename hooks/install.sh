@@ -48,7 +48,7 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
 fi
 
 REPO_RAW="https://raw.githubusercontent.com/ianreboot/memento/main/hooks"
-HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "memento-precompact.js" "memento-sessionend.js" "install.sh")
+HOOK_FILES=("package.json" "memento-config.js" "memento-debug.js" "memento-activate.js" "memento-tracker.js" "memento-precompact.js" "memento-sessionend.js" "memento-write-why.js" "install.sh")
 
 # ---------------------------------------------------------------------------
 # Uninstall

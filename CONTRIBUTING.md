@@ -48,6 +48,13 @@ Four hooks run automatically on every Claude Code session:
 - Skips if a richer bridge already exists from the tracker or PreCompact hook
 - No stdout output (session is ending; nothing to inject)
 
+**`memento-write-why.js`** (journal write helper — invoked by Claude via Bash):
+- Called as `node memento-write-why.js '<why string>'` — Claude runs this instead of using the Write tool
+- Reads the existing journal, manages `why_history` (append on change, cap at 10), writes via `writeJournal()`
+- Eliminates the Read-before-Write requirement of the Write tool (3 tool calls → 1 Bash call per journal write)
+- Routes all writes through `writeJournal()` — atomic temp+rename, symlink-safe (fixes KNOWN_ISSUES #2)
+- Silent-fail on any error; no stdout output
+
 **`memento-config.js`** (shared utilities):
 - Instance tag: `getInstanceTag()` → OS username → "default" (journal file path; override with `MEMENTO_INSTANCE_TAG`)
 - Project tag: `getProjectTag()` → git root basename → cwd basename → "default" (informational only; common names blocklisted)
@@ -55,6 +62,7 @@ Four hooks run automatically on every Claude Code session:
 - `readJournal()` — symlink-safe, size-capped JSON read; returns null for any journal without a `why` field
 - `writeJournal()` — atomic temp+rename, symlink-safe, 0600 permissions; normalizes and caps `why` and `why_history`
 - `sanitizeLine()` — collapses newlines and excess whitespace in string fields
+- `WRITE_SCRIPT_PATH` — absolute path to `memento-write-why.js` (hooks embed this in MANDATORY WRITE prompts)
 - Constants: `MAX_WHY_CHARS` (200), `MAX_WHY_HISTORY` (10), `MAX_JOURNAL_BYTES`, `BRIDGE_TRIGGER_PCT` (74), `CTX_DROP_THRESHOLD` (20)
 - Bridge utilities: `getCtxBridgePath`, `writeCtxBridge`, `readCtxBridge`, `deleteCtxBridge`
 - JSONL utilities: `findLatestJsonl`, `readLastUsage`, `getLastCtxPath`, `readLastCtxPct`, `writeLastCtxPct`
@@ -132,7 +140,7 @@ Since memento is a Claude Code plugin, full end-to-end testing requires Claude C
 2. **Journal utilities**: Write a small test script that calls functions from `memento-config.js` directly.
 3. **Integration**: Install hooks, open Claude Code, complete some tasks, trigger compaction manually (by filling context), and verify recovery.
 
-Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (119 tests total).
+Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, write helper, and symlink safety (127 tests total).
 
 ## Contribution Guidelines
 

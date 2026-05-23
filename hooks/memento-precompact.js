@@ -32,6 +32,7 @@ const {
   writeCtxBridge,
   CONTEXT_WINDOW,
   CLAUDE_BIN,
+  WRITE_SCRIPT_PATH,
 } = require('./memento-config.js');
 
 let rawInput = '';
@@ -94,15 +95,14 @@ function main() {
   let message;
   if (!why) {
     message = `${header}\nNo prior journal. Why are we doing this?\n` +
-              `Always write why+when (purpose, not action) before context clears. [GUESS] always valid.\n` +
-              `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
+              `Always write why (purpose, not action) before context clears. [GUESS] always valid.\n` +
+              `node ${WRITE_SCRIPT_PATH} '<your why>'`;
   } else {
     const isGuess   = why.startsWith('[GUESS]');
     const prevLabel = isGuess ? why : `"${why}"`;
-    const prevWhen  = when || '<prev-ISO>';
     message = `${header}\nWhy are we doing this? Previous: ${prevLabel}\n` +
-              `Always write why+when (purpose, not action) before context clears. Append to why_history only if why changed. [GUESS] always valid.\n` +
-              `{"why":"...","when":"<ISO>","why_history":[...append {"w":"${why}","t":"${prevWhen}"} only if changed...]}`;
+              `Always write why (purpose, not action) before context clears. [GUESS] always valid.\n` +
+              `node ${WRITE_SCRIPT_PATH} '<your why>'`;
   }
 
   process.stdout.write(message + '\n');

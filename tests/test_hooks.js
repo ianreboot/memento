@@ -180,7 +180,7 @@ test('compact + confirmed why journal: emits Recovery prompt', () => {
   assert.ok(r.stdout.includes('[MEMENTO] Recovering'), 'must show Recovering header');
   assert.ok(r.stdout.includes('MANDATORY WRITE'), 'must say MANDATORY WRITE');
   assert.ok(r.stdout.includes('"fixing auth for mobile"'), 'must show why');
-  assert.ok(r.stdout.includes('[...existing entries...]'), 'must show existing entries placeholder');
+  assert.ok(r.stdout.includes('memento-write-why.js'), 'must include write command');
 });
 
 test('resume + confirmed why journal: same as compact (Recovery prompt)', () => {
@@ -713,7 +713,7 @@ test('precompact + confirmed why: emits LAST WRITE OPPORTUNITY with why', () => 
   assert.ok(r.stdout.includes('LAST WRITE OPPORTUNITY'), 'must say LAST WRITE OPPORTUNITY');
   assert.ok(r.stdout.includes('MANDATORY WRITE'), 'must say MANDATORY WRITE');
   assert.ok(r.stdout.includes('"fixing auth for mobile"'), 'must show current why');
-  assert.ok(r.stdout.includes('Append to why_history only if why changed'), 'must include history instruction');
+  assert.ok(r.stdout.includes('memento-write-why.js'), 'must include write command');
 });
 
 test('precompact + [GUESS] why: emits LAST WRITE OPPORTUNITY with [GUESS] framing', () => {
@@ -918,6 +918,96 @@ test('sessionend: no stdout output (session is ending, nothing to inject)', () =
   writeV4Journal(dir, { why: 'finalizing deploy' });
   const r = runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir });
   assert.strictEqual(r.stdout, '', 'sessionend must produce no stdout output');
+});
+
+// ---------------------------------------------------------------------------
+// memento-write-why.js (journal write helper)
+// ---------------------------------------------------------------------------
+
+console.log('\nmemento-write-why.js');
+
+function runWriteScript(why, extraEnv = {}) {
+  const args = why !== undefined ? [path.join(HOOKS_DIR, 'memento-write-why.js'), why] : [path.join(HOOKS_DIR, 'memento-write-why.js')];
+  return spawnSync('node', args, {
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, {
+      MEMENTO_DEBUG: '',
+      MEMENTO_INSTANCE_TAG: 'testuser',
+    }, extraEnv),
+    timeout: 5000,
+  });
+}
+
+function readWrittenJournal(dir) {
+  const journalPath = path.join(dir, '.memento', 'testuser.json');
+  try { return JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch (e) { return null; }
+}
+
+test('write-why: creates journal from scratch (no existing)', () => {
+  const dir = tmpDir();
+  const r = runWriteScript('fixing auth for mobile', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0, `must exit 0; stderr: ${r.stderr}`);
+  const j = readWrittenJournal(dir);
+  assert.ok(j !== null, 'journal must be written');
+  assert.strictEqual(j.why, 'fixing auth for mobile');
+  assert.deepStrictEqual(j.why_history, [], 'history must be empty on first write');
+});
+
+test('write-why: appends to why_history when why changes', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir, { why: 'setup project', when: '2026-05-21T12:00:00Z', why_history: [] });
+  runWriteScript('fixing auth for mobile', { CLAUDE_CONFIG_DIR: dir });
+  const j = readWrittenJournal(dir);
+  assert.strictEqual(j.why, 'fixing auth for mobile');
+  assert.strictEqual(j.why_history.length, 1, 'history must have one entry');
+  assert.strictEqual(j.why_history[0].w, 'setup project');
+});
+
+test('write-why: does not append to why_history when why is same', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir, { why: 'fixing auth', when: '2026-05-21T14:00:00Z', why_history: [{ w: 'setup', t: '2026-05-21T12:00:00Z' }] });
+  runWriteScript('fixing auth', { CLAUDE_CONFIG_DIR: dir });
+  const j = readWrittenJournal(dir);
+  assert.strictEqual(j.why, 'fixing auth');
+  assert.strictEqual(j.why_history.length, 1, 'history must be unchanged on same-value write');
+});
+
+test('write-why: truncates why to 200 chars', () => {
+  const dir = tmpDir();
+  const longWhy = 'x'.repeat(300);
+  runWriteScript(longWhy, { CLAUDE_CONFIG_DIR: dir });
+  const j = readWrittenJournal(dir);
+  assert.strictEqual(j.why.length, 200, 'why must be truncated to 200 chars');
+});
+
+test('write-why: exits 0 and no-ops on empty argument', () => {
+  const dir = tmpDir();
+  const r = runWriteScript('', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0, 'must exit 0 on empty why');
+  assert.strictEqual(readWrittenJournal(dir), null, 'must not write journal on empty why');
+});
+
+test('write-why: exits 0 and no-ops with no argument', () => {
+  const dir = tmpDir();
+  const r = runWriteScript(undefined, { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0, 'must exit 0 with no argument');
+  assert.strictEqual(readWrittenJournal(dir), null, 'must not write journal with no argument');
+});
+
+test('write-why: produces no stdout output', () => {
+  const dir = tmpDir();
+  const r = runWriteScript('fixing auth', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.stdout, '', 'must produce no stdout output');
+});
+
+test('write-why: written journal uses atomic writeJournal (0600 permissions)', () => {
+  const dir = tmpDir();
+  runWriteScript('fixing auth for mobile', { CLAUDE_CONFIG_DIR: dir });
+  const journalPath = path.join(dir, '.memento', 'testuser.json');
+  const st = fs.statSync(journalPath);
+  // Check owner-read-write, no group/other permissions (0600)
+  // eslint-disable-next-line no-bitwise
+  assert.strictEqual(st.mode & 0o777, 0o600, 'journal must be written with 0600 permissions');
 });
 
 // ---------------------------------------------------------------------------

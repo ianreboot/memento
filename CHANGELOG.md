@@ -12,8 +12,15 @@ hook unconsumed when sessions returned via `source=compact`.
 - **Why this matters**: Manual `/compact` at low context (below 74%) and auto-compaction
   via the PreCompact path both set `source=compact` on return. The bridge was present but
   never injected. Removing the gate closes this gap for all compaction paths.
-- **No schema changes.** Bridge format and journal format unchanged.
-- **Tests**: 64 passing (updated activate bridge tests to reflect source-agnostic behavior).
+- **New**: `memento-write-why.js` — write helper script. Claude runs `node /path/to/memento-write-why.js '<why>'`
+  instead of writing JSON via the Write tool. Eliminates the Read-before-Write friction (Write tool requires
+  a prior Read of the same file), reducing each journal write from 3 tool calls to 1 Bash call.
+  The script reads the existing journal, manages `why_history` (append-on-change, cap at 10), and writes
+  atomically via `writeJournal()` — fixing KNOWN_ISSUES.md #2 (Write tool path bypassed atomic protections).
+- **SKILL.md updated** to instruct `node <cmd> '<your why>'`. `why_history` management rules removed
+  from SKILL.md (script handles them). Fallback to Write tool documented for missing-script edge case.
+- **No journal schema changes.** Same `{why, when, why_history}` format.
+- **Tests**: 127 passing (8 new tests for write helper, updated prompt assertions).
 
 ## v0.5.5 — 2026-05-23
 

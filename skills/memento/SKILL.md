@@ -8,16 +8,18 @@ description: >
 
 # Memento
 
-One rule: when [MEMENTO] says MANDATORY WRITE, write your current why to the path shown
-before your next tool call. Always pick one — never skip:
+One rule: when [MEMENTO] says MANDATORY WRITE, run the command shown before your first tool call:
 
-  Confirmed: {"why":"fixing auth, mobile 401s, staging only","when":"2026-05-21T14:00:00Z","why_history":[{"w":"setup project","t":"2026-05-21T12:00:00Z"}]}
-  Uncertain: {"why":"[GUESS] probably fixing auth, editing auth middleware files","when":"2026-05-21T14:00:00Z","why_history":[{"w":"setup project","t":"2026-05-21T12:00:00Z"}]}
+  node /path/to/memento-write-why.js '<your why>'
 
-[GUESS] is always valid. Never write null. Drop [GUESS] only if you have direct evidence (user statement, task description).
-Append to why_history only when the why value changes (not on same-value rewrites). Cap 10 entries; drop oldest when exceeded.
-why max 200 characters. Journal path is always in the [MEMENTO] header — do not derive it yourself.
-If the session is ending (user says goodbye, task complete, no more work), update why: "Done: X. Next: Y." or "Stopped mid-X, resume at Y."
+The exact command is in every MANDATORY WRITE prompt — do not derive the path yourself. Use single quotes
+to avoid shell interpretation of special characters. Always run the command; never skip.
+
+[GUESS] is always valid. Never pass an empty string. Drop [GUESS] only if you have direct evidence (user statement, task description).
+why max 200 characters.
+If the session is ending (user says goodbye, task complete, no more work), pass: 'Done: X. Next: Y.' or 'Stopped mid-X, resume at Y.'
+
+Fallback (if the command errors or is unavailable): write {"why":"...","when":"<ISO>","why_history":[...existing entries...]} to the path shown.
 
 When [BRIDGE] appears: write ctx_bridge.json at the path shown before your next tool call.
 List files you are actively editing (5 max). next: exact action to resume. err: current error

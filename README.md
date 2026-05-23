@@ -104,7 +104,7 @@ Only the richest available bridge is used. A bridge written at 74% by Claude is 
 
 **Override:** Set `MEMENTO_CONTEXT_WINDOW_TOKENS=<n>` if your model has a different context window than the 200,000-token default.
 
-Nothing appears in your conversation. The journal is a background process. Journal writes appear as Write tool calls in your tool stream — visible confirmation that memento is saving your work, not conversation content.
+Nothing appears in your conversation. The journal is a background process. Journal writes appear as Bash tool calls in your tool stream — visible confirmation that memento is saving your work, not conversation content.
 
 ## What Recovery Looks Like
 

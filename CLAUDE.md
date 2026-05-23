@@ -52,6 +52,7 @@ SessionEnd hook) — only the richest available bridge is used.
 | `hooks/memento-tracker.js` | UserPromptSubmit hook — emits per-turn MANDATORY WRITE prompt, increments sidecar | Yes |
 | `hooks/memento-precompact.js` | PreCompact hook — emits last-write-opportunity prompt + writes ctx_bridge via claude -p | Yes |
 | `hooks/memento-sessionend.js` | SessionEnd hook — writes minimal ctx_bridge from journal.why on session exit | Yes |
+| `hooks/memento-write-why.js` | Journal write helper — Claude runs this via Bash instead of Write tool; atomic writes, history management | Yes |
 | `hooks/package.json` | CommonJS marker — required for require() in hook scripts | No |
 | `hooks/install.sh` | Standalone installer (for non-plugin install path) | Yes |
 | `.claude-plugin/plugin.json` | Plugin manifest (used by claude plugin install) | Yes |

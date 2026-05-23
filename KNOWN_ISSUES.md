@@ -10,11 +10,11 @@ When two Claude Code windows work on the same project simultaneously, journal wr
 
 **Workaround**: Set `MEMENTO_INSTANCE_TAG` to different values per instance so each gets its own journal file.
 
-## 2. Claude's Write tool bypasses atomic write protections
+## 2. ~~Claude's Write tool bypasses atomic write protections~~ — **Fixed in v0.5.6**
 
-The primary journal write path (Claude using the Write tool as instructed by SKILL.md) does not use the atomic temp+rename write in `writeJournal()`. If Claude Code crashes mid-write, the journal file may be partially written and unreadable. The hooks detect this (readJournal returns null on invalid JSON) and start fresh, losing prior state.
-
-**Mitigation**: Because writes are mandatory every turn, the journal is at most one turn stale at any crash point. The next session start will prompt Claude to re-establish current intent.
+Journal writes now route through `memento-write-why.js`, which uses the same atomic
+`temp+rename` write as `writeJournal()`. Crash during a journal write no longer results
+in a partially-written or corrupt file.
 
 ## 3. Windows symlink protection gap
 

@@ -72,6 +72,10 @@ const BRIDGE_SPIKE_TOKENS = 3000; // cache_write spike guard threshold
 // Context only grows between turns — any drop is compaction. 20pp margin for safety.
 const CTX_DROP_THRESHOLD = 20;
 
+// claude CLI binary used by precompact for AI transcript extraction.
+// Override with MEMENTO_CLAUDE_BIN for testing or non-standard installs.
+const CLAUDE_BIN = process.env.MEMENTO_CLAUDE_BIN || 'claude';
+
 // ---------------------------------------------------------------------------
 // Instance tag derivation (used for journal FILE PATH)
 // ---------------------------------------------------------------------------
@@ -564,4 +568,5 @@ module.exports = {
   MAX_BRIDGE_FILES,
   MAX_BRIDGE_FILE_CHARS,
   MAX_BRIDGE_ERR_CHARS,
+  CLAUDE_BIN,
 };

@@ -1,15 +1,25 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.5.1)
+// memento — PreCompact hook (v0.5.3)
 //
-// Runs before context compaction. Always emits a MANDATORY WRITE prompt so
-// Claude records its current 'why' before context clears. The write is
-// mandatory regardless of current journal state — this is the last chance
-// to capture intent before the compaction window closes.
+// Runs before context compaction. Does two things:
+//
+// 1. Emits a MANDATORY WRITE prompt so Claude records its current 'why'
+//    before context clears (best-effort — tool use may not be available
+//    during compaction, but the prompt is there if it is).
+//
+// 2. Writes ctx_bridge.json directly (no dependency on Claude writing it):
+//    - Primary: spawns `claude -p` with a fresh context window, pipes the
+//      session transcript tail as stdin, parses AI-extracted {files, next, err}.
+//    - Fallback: if claude -p fails, writes a minimal bridge from journal.why.
+//    - Skip: if a bridge already exists (written by tracker at ≥74% ctx —
+//      richer, with files the tracker's Claude was actively editing).
 //
 // On any error, exits 0 silently — must never block compaction.
 
 'use strict';
 
+const fs = require('fs');
+const { spawnSync } = require('child_process');
 const {
   getClaudeDir,
   getInstanceTag,
@@ -18,7 +28,10 @@ const {
   getCtxBridgePath,
   findLatestJsonl,
   readLastUsage,
+  readCtxBridge,
+  writeCtxBridge,
   CONTEXT_WINDOW,
+  CLAUDE_BIN,
 } = require('./memento-config.js');
 
 let rawInput = '';
@@ -39,7 +52,7 @@ function main() {
   const journalPath = getJournalPath(claudeDir, instanceTag);
   const journal     = readJournal(journalPath);
 
-  // Read current ctx% for inclusion in [BRIDGE] pct field
+  // Read current ctx% for pct field in bridge
   const jsonlPath = findLatestJsonl(claudeDir);
   let usedPct = null;
   if (jsonlPath) {
@@ -55,6 +68,27 @@ function main() {
   const why  = journal && typeof journal.why === 'string' ? journal.why : null;
   const when = journal && journal.when ? journal.when : null;
 
+  // Write ctx_bridge.json if not already written by tracker.
+  // Tracker's bridge is richer (Claude knew which files it was editing).
+  // Here we only write if no bridge exists yet.
+  const bridgePath = getCtxBridgePath(claudeDir);
+  if (!readCtxBridge(bridgePath)) {
+    const transcriptPath = resolveTranscript(rawInput, claudeDir);
+    const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, usedPct);
+    if (!written && why) {
+      // Fallback: minimal bridge from journal.why (no files, no err)
+      writeCtxBridge(bridgePath, {
+        files: [],
+        next:  why,
+        err:   null,
+        pct:   usedPct !== null ? Math.round(usedPct) : null,
+        at:    new Date().toISOString(),
+      });
+    }
+  }
+
+  // Emit MANDATORY WRITE prompt (best-effort — Claude may not be able to
+  // use Write tool during compaction, but prompt is injected regardless)
   const header = `[MEMENTO] MANDATORY WRITE — LAST WRITE OPPORTUNITY | path: ${journalPath}`;
 
   let message;
@@ -71,14 +105,86 @@ function main() {
               `{"why":"...","when":"<ISO>","why_history":[...append {"w":"${why}","t":"${prevWhen}"} only if changed...]}`;
   }
 
-  // Always emit [BRIDGE] directive — write the freshest possible bridge before compaction.
-  // Covers manual /compact at any % (including below 74% where tracker [BRIDGE] never fired).
-  const bridgePath = getCtxBridgePath(claudeDir);
-  const pctStr     = usedPct !== null ? Math.round(usedPct) : '?';
-  const bridgeDirective = `\n[BRIDGE] pre-compaction — write ctx_bridge.json now. path: ${bridgePath}\n` +
-    `List files you are actively editing, your exact next step, current error or null.\n` +
-    `{"files":["path1"],"next":"<exact next step>","err":null,"pct":${pctStr},"at":"<ISO>"}`;
-
-  process.stdout.write(message + bridgeDirective + '\n');
+  process.stdout.write(message + '\n');
   process.exit(0);
+}
+
+// Resolve transcript path: prefer stdin transcript_path, fallback to findLatestJsonl.
+function resolveTranscript(rawInput, claudeDir) {
+  try {
+    const input = JSON.parse(rawInput);
+    if (input.transcript_path && typeof input.transcript_path === 'string') {
+      const tp = input.transcript_path.trim();
+      if (tp) {
+        try { fs.statSync(tp); return tp; } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  return findLatestJsonl(claudeDir);
+}
+
+// Spawn `claude -p` with transcript tail piped to stdin.
+// Parse JSON output and write ctx_bridge.json.
+// Returns true on success, false on any failure (caller handles fallback).
+function tryWriteAiBridge(bridgePath, transcriptPath, usedPct) {
+  try {
+    // Read last 32KB of transcript
+    const stat = fs.statSync(transcriptPath);
+    const tail = Math.min(32768, stat.size);
+    const buf  = Buffer.alloc(tail);
+    const fd   = fs.openSync(transcriptPath, 'r');
+    try { fs.readSync(fd, buf, 0, tail, stat.size - tail); }
+    finally { fs.closeSync(fd); }
+    const transcriptTail = buf.toString('utf8');
+
+    const prompt = [
+      'Analyze this Claude Code session transcript (JSONL format). Extract recovery state.',
+      'Output ONLY a single-line JSON object — no explanation, no markdown:',
+      '{"files":["<path>"],"next":"<exact next step, max 300 chars>","err":"<error or null>"}',
+      '',
+      'Rules:',
+      '- files: up to 5 absolute paths recently written/edited (look for Write/Edit tool calls in last few turns)',
+      '- next: exact next action to resume this session (specific, not vague)',
+      '- err: current error being debugged as a string, or JSON null if none',
+      '- If unclear: use [] for files, infer next from conversation context',
+    ].join('\n');
+
+    const result = spawnSync(CLAUDE_BIN, ['-p', prompt], {
+      input:    transcriptTail,
+      encoding: 'utf8',
+      timeout:  30000,
+    });
+
+    if (result.status !== 0 || !result.stdout) return false;
+
+    const extracted = parseJsonOutput(result.stdout);
+    if (!extracted || typeof extracted.next !== 'string') return false;
+
+    writeCtxBridge(bridgePath, {
+      files: Array.isArray(extracted.files) ? extracted.files : [],
+      next:  extracted.next,
+      err:   extracted.err || null,
+      pct:   usedPct !== null ? Math.round(usedPct) : null,
+      at:    new Date().toISOString(),
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Parse JSON from claude's output — handles extra whitespace and markdown fences.
+function parseJsonOutput(output) {
+  // Scan lines in reverse — last non-empty JSON object is the answer
+  const lines = output.trim().split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line.startsWith('{')) {
+      try { return JSON.parse(line); } catch (e) {}
+    }
+  }
+  // Strip markdown fences and try the whole output
+  const stripped = output.replace(/```(?:json)?\n?/g, '').replace(/```\n?/g, '').trim();
+  try { return JSON.parse(stripped); } catch (e) {}
+  return null;
 }

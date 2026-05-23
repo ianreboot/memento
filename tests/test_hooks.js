@@ -100,6 +100,35 @@ function parseAdditionalContext(stdout) {
   }
 }
 
+// Create a fake `claude` binary that outputs a fixed string and exits with given code.
+// Returns the path to the fake binary (pass as MEMENTO_CLAUDE_BIN env var).
+function writeFakeClaude(dir, output, { exitCode = 0 } = {}) {
+  const fakeBinDir = path.join(dir, 'bin');
+  fs.mkdirSync(fakeBinDir, { recursive: true });
+  const fakeClaude = path.join(fakeBinDir, 'fake-claude.js');
+  fs.writeFileSync(
+    fakeClaude,
+    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(output)});\nprocess.exit(${exitCode});\n`,
+    { mode: 0o755 },
+  );
+  return fakeClaude;
+}
+
+// Write a minimal JSONL session file so findLatestJsonl() returns a path.
+function writeJsonlForPrecompact(dir) {
+  const projectDir = path.join(dir, 'projects', 'fakehash');
+  fs.mkdirSync(projectDir, { recursive: true });
+  const entry = JSON.stringify({ type: 'assistant', message: { usage: {
+    input_tokens: 10000,
+    cache_read_input_tokens: 100000,
+    cache_creation_input_tokens: 50000,
+    output_tokens: 500,
+  }}});
+  const jsonlPath = path.join(projectDir, 'session.jsonl');
+  fs.writeFileSync(jsonlPath, entry + '\n');
+  return jsonlPath;
+}
+
 // ---------------------------------------------------------------------------
 // memento-activate.js (SessionStart)
 // ---------------------------------------------------------------------------
@@ -713,57 +742,102 @@ test('precompact: silent fail on error (exits 0)', () => {
   assert.strictEqual(r.status, 0);
 });
 
-test('precompact always emits [BRIDGE] directive (unconditional, even with no prior bridge)', () => {
+test('precompact emits only MANDATORY WRITE (no [BRIDGE] directive — hook writes bridge directly)', () => {
   const dir = tmpDir();
   writeV4Journal(dir);
-  // No bridge file pre-created
-  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const fakeClaude = writeFakeClaude(dir, '{"files":[],"next":"test","err":null}');
+  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+  assert.ok(r.stdout.includes('MANDATORY WRITE'), 'must emit MANDATORY WRITE');
+  assert.ok(r.stdout.includes('LAST WRITE OPPORTUNITY'), 'must say LAST WRITE OPPORTUNITY');
+  assert.ok(!r.stdout.includes('[BRIDGE]'), 'must NOT emit [BRIDGE] directive — hook writes bridge itself');
+});
+
+test('precompact: writes bridge via claude -p when no existing bridge', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir, { why: 'debugging auth' });
+  writeJsonlForPrecompact(dir);
+  const fakeClaude = writeFakeClaude(dir, '{"files":["/home/foo.js"],"next":"run tests","err":null}');
+
+  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
   assert.strictEqual(r.status, 0);
-  assert.ok(r.stdout.includes('[BRIDGE]'), 'must emit [BRIDGE] directive unconditionally');
-  assert.ok(r.stdout.includes('ctx_bridge.json'), 'must include bridge file path in directive');
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(fs.existsSync(bridgePath), 'bridge must be written by hook');
+  const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+  assert.deepStrictEqual(bridge.files, ['/home/foo.js'], 'files must come from claude -p output');
+  assert.strictEqual(bridge.next, 'run tests', 'next must come from claude -p output');
+  assert.strictEqual(bridge.err, null, 'err must be null');
 });
 
-test('precompact [BRIDGE] + MANDATORY WRITE in same output', () => {
+test('precompact: does NOT overwrite existing bridge (tracker bridge is richer)', () => {
   const dir = tmpDir();
   writeV4Journal(dir);
-  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir });
-  assert.ok(r.stdout.includes('MANDATORY WRITE'), 'must still emit MANDATORY WRITE');
-  assert.ok(r.stdout.includes('[BRIDGE]'), 'must emit [BRIDGE] directive');
-  assert.ok(r.stdout.includes('LAST WRITE OPPORTUNITY'), 'must still say LAST WRITE OPPORTUNITY');
-});
+  writeJsonlForPrecompact(dir);
+  const fakeClaude = writeFakeClaude(dir, '{"files":["/new.js"],"next":"new step","err":null}');
 
-test('precompact emits [BRIDGE] when bridge file already exists (overwrite)', () => {
-  const dir = tmpDir();
-  writeV4Journal(dir);
+  // Pre-existing bridge written by tracker at 78%
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
-  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), '{"files":["/a.js"],"next":"test","err":null,"pct":78,"at":"2026-05-23T00:00:00Z"}');
-  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir });
-  assert.strictEqual(r.status, 0);
-  assert.ok(r.stdout.includes('[BRIDGE]'), 'must emit [BRIDGE] even when bridge already exists (fresher overwrite)');
+  const existing = '{"files":["/old.js"],"next":"old step","err":null,"pct":78,"at":"2026-05-23T00:00:00Z"}';
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), existing);
+
+  runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridge = JSON.parse(fs.readFileSync(path.join(mementoDir, 'ctx_bridge.json'), 'utf8'));
+  assert.strictEqual(bridge.next, 'old step', 'must preserve tracker-written bridge');
+  assert.deepStrictEqual(bridge.files, ['/old.js'], 'must preserve tracker-written files');
 });
 
-test('precompact + bridge absent → still emits [BRIDGE] directive (unconditional)', () => {
+test('precompact: falls back to journal.why if claude -p fails', () => {
   const dir = tmpDir();
-  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir });
-  assert.strictEqual(r.status, 0);
-  assert.ok(r.stdout.includes('[BRIDGE]'), 'must emit [BRIDGE] even when no prior bridge file');
+  writeV4Journal(dir, { why: 'implementing feature X' });
+  writeJsonlForPrecompact(dir);
+  const fakeClaude = writeFakeClaude(dir, 'not json', { exitCode: 1 });
+
+  runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(fs.existsSync(bridgePath), 'fallback bridge must be written');
+  const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+  assert.strictEqual(bridge.next, 'implementing feature X', 'fallback next must equal journal.why');
+  assert.deepStrictEqual(bridge.files, [], 'fallback files must be empty');
 });
 
-test('precompact: neither branch uses hedging language ("may have been" must not appear)', () => {
-  const dir1 = tmpDir();
-  const dir2 = tmpDir();
+test('precompact: no bridge written if no journal and claude -p unavailable', () => {
+  const dir = tmpDir();
+  // No journal; claude exits non-zero
+  const fakeClaude = writeFakeClaude(dir, '', { exitCode: 1 });
 
-  // With bridge
-  const mementoDir = path.join(dir1, '.memento');
-  fs.mkdirSync(mementoDir, { recursive: true });
-  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), '{"files":[],"next":"test","err":null,"pct":74,"at":"2026-05-23T00:00:00Z"}');
-  const r1 = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir1 });
-  assert.ok(!r1.stdout.includes('may have been'), 'with-bridge output must not hedge with "may have been"');
+  runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
 
-  // Without bridge
-  const r2 = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir2 });
-  assert.ok(!r2.stdout.includes('may have been'), 'no-bridge output must not hedge with "may have been"');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(!fs.existsSync(bridgePath), 'no bridge must be written without journal fallback');
+});
+
+test('precompact: uses transcript_path from stdin when valid', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  // Write JSONL at a custom path (not in projects/ dir)
+  const jsonlPath = path.join(dir, 'custom.jsonl');
+  fs.writeFileSync(jsonlPath, '{"type":"assistant","message":{"usage":{"input_tokens":1}}}\n');
+  const fakeClaude = writeFakeClaude(dir, '{"files":["/src/main.js"],"next":"fix the bug","err":"TypeError"}');
+
+  const stdin = JSON.stringify({ transcript_path: jsonlPath });
+  runHook('memento-precompact.js', stdin, { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.ok(fs.existsSync(bridgePath), 'bridge must be written using stdin transcript_path');
+  const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
+  assert.strictEqual(bridge.err, 'TypeError', 'err must come from claude -p output');
+  assert.strictEqual(bridge.next, 'fix the bug');
+});
+
+test('precompact: output does not contain hedging language ("may have been" must not appear)', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const fakeClaude = writeFakeClaude(dir, '{"files":[],"next":"test","err":null}');
+  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
+  assert.ok(!r.stdout.includes('may have been'), 'output must not hedge with "may have been"');
 });
 
 // ---------------------------------------------------------------------------

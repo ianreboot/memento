@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — shared configuration and journal utilities (v0.5.1)
+// memento — shared configuration and journal utilities (v0.5.3)
 //
 // Handles:
 //   - Instance tag derivation (which journal file to use; one file per OS user)

@@ -551,15 +551,28 @@ test('[CTX BRIDGE] NOT injected when ctx only grew (no drop)', () => {
   assert.ok(!ctx.includes('[CTX BRIDGE]'), 'must not inject when ctx grew');
 });
 
-test('[CTX BRIDGE] NOT injected on first run (no last_ctx file)', () => {
+test('[CTX BRIDGE] injected via fallback: no last_ctx + ctx below trigger threshold', () => {
+  // v0.5.2: if last_ctx missing but ctx < BRIDGE_TRIGGER_PCT, compaction is inferred
   const dir = tmpDir();
   writeTurnSidecar(dir, 0);
   writeV4Journal(dir);
-  writeJsonlWithPct(dir, 21);  // fresh session — no prior last_ctx
+  writeJsonlWithPct(dir, 21);  // post-compaction ctx — well below 74% trigger
   writeCtxBridgeFile(dir);
   const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
   const ctx = parseAdditionalContext(r.stdout);
-  assert.ok(!ctx.includes('[CTX BRIDGE]'), 'must not inject when no last_ctx (first run)');
+  assert.ok(ctx.includes('[CTX BRIDGE]'), 'must inject via fallback when no last_ctx and ctx < trigger');
+});
+
+test('[CTX BRIDGE] NOT injected: no last_ctx + ctx above trigger threshold (no compaction)', () => {
+  // v0.5.2: fallback only fires when ctx < BRIDGE_TRIGGER_PCT
+  const dir = tmpDir();
+  writeTurnSidecar(dir, 0);
+  writeV4Journal(dir);
+  writeJsonlWithPct(dir, 80);  // high ctx — above trigger, no compaction
+  writeCtxBridgeFile(dir);
+  const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const ctx = parseAdditionalContext(r.stdout);
+  assert.ok(!ctx.includes('[CTX BRIDGE]'), 'must not inject when ctx above trigger (no compaction inferred)');
 });
 
 test('[CTX BRIDGE] NOT injected when drop detected but bridge absent', () => {

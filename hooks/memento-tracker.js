@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.5.1)
+// memento — UserPromptSubmit hook (v0.5.2)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -87,16 +87,24 @@ function run(rawInput) {
   const lastCtxPath = getLastCtxPath(journalPath);
 
   // Drop detection: a significant ctx% drop means a compaction just occurred.
-  // Context only grows between turns — any drop ≥ CTX_DROP_THRESHOLD is unambiguous.
-  // Covers both inline auto-compaction and true session restarts.
+  // Primary: ctx% dropped ≥ CTX_DROP_THRESHOLD from last_ctx (normal per-turn tracking).
+  // Fallback: no last_ctx exists (first run post-install or last_ctx lost) — use bridge.pct
+  // as the reference. A ≥ CTX_DROP_THRESHOLD drop from bridge.pct to current ctx means
+  // compaction occurred between when the bridge was written and now.
+  // If bridge has no pct field, fall back to usedPct < BRIDGE_TRIGGER_PCT heuristic.
   const lastCtxPct = readLastCtxPct(lastCtxPath);
+  const bridge = readCtxBridge(bridgePath);
   let ctxBridgeStr = '';
-  if (usedPct !== null && lastCtxPct !== null && (lastCtxPct - usedPct) >= CTX_DROP_THRESHOLD) {
-    const bridge = readCtxBridge(bridgePath);
-    if (bridge) {
-      ctxBridgeStr = buildBridgeInjection(bridge) + '\n';
-      deleteCtxBridge(bridgePath);
-    }
+  const compactionDetected = usedPct !== null && (() => {
+    if (lastCtxPct !== null) return (lastCtxPct - usedPct) >= CTX_DROP_THRESHOLD;
+    if (!bridge) return false;
+    // Fallback: compare against bridge's own pct (precise) or trigger threshold (coarse)
+    const refPct = typeof bridge.pct === 'number' ? bridge.pct : BRIDGE_TRIGGER_PCT;
+    return (refPct - usedPct) >= CTX_DROP_THRESHOLD;
+  })();
+  if (compactionDetected && bridge) {
+    ctxBridgeStr = buildBridgeInjection(bridge) + '\n';
+    deleteCtxBridge(bridgePath);
   }
 
   // bridgeExists computed AFTER potential deletion above

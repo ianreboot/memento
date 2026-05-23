@@ -153,7 +153,7 @@ function buildTurn1Prompt(journalPath, why, when) {
   if (!why) {
     // Variant 1: no prior journal (or old-schema journal)
     return `${header}\nNo prior journal. Why are we doing this?\n` +
-           `Write your current why. [GUESS] always valid if intent is unclear.\n` +
+           `Write your current why (purpose, not action). [GUESS] always valid if intent is unclear.\n` +
            `{"why":"<intent or [GUESS] best inference>","when":"<ISO>","why_history":[]}`;
   }
 
@@ -163,13 +163,13 @@ function buildTurn1Prompt(journalPath, why, when) {
   if (isGuess) {
     // Variant 3: previous why was a [GUESS]
     return `${header}\nWhy are we doing this? Previous: ${why}\n` +
-           `Write your current why. Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
+           `Write your current why (purpose, not action). Drop [GUESS] only if you have direct evidence (user statement, task description). Otherwise keep [GUESS].\n` +
            `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
   }
 
   // Variant 2: confirmed previous why
   return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
-         `Write your current why. [GUESS] always valid. Same is fine.\n` +
+         `Write your current why (purpose, not action). [GUESS] always valid. Same is fine.\n` +
          `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
 }
 

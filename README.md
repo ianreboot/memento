@@ -235,8 +235,10 @@ All settings are optional. Memento works out of the box with no configuration.
 | `MEMENTO_INSTANCE_TAG` | OS username | Override journal filename — use when two Claude windows share an OS user, or multiple users share a machine account |
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
 | `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>.debug.json` |
+| `MEMENTO_CONTEXT_WINDOW_TOKENS` | `200000` | Override context window size for the 74% bridge threshold — use if your model has a different context window |
+| `MEMENTO_CLAUDE_BIN` | `claude` | Override the `claude` binary path used for transcript extraction in the PreCompact hook (useful for testing) |
 
-Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window. `MEMENTO_CLAUDE_BIN` overrides the `claude` binary used for transcript extraction in the PreCompact hook (useful for testing).
+Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window.
 
 **Shared accounts**: If multiple users or Claude windows share the same OS user account, set a unique `MEMENTO_INSTANCE_TAG` per instance (e.g. `MEMENTO_INSTANCE_TAG=alice` and `MEMENTO_INSTANCE_TAG=bob`).
 

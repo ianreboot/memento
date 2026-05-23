@@ -22,13 +22,17 @@ Four hooks run automatically on every Claude Code session:
 **`memento-activate.js`** (SessionStart):
 - Reads the journal for the current instance
 - Resets the turn counter sidecar (0 for fresh start, 1 for recovery)
+- Reads and deletes `ctx_bridge.json` if present — file existence is the signal regardless of `source`
 - Writes to stdout — Claude Code injects this as hidden system context
 - Recovery prompt on `source: "compact"` or `"resume"`. Turn 1 prompt on `source: "startup"`.
+- Bridge content (`[CTX BRIDGE]` block) prepended to the prompt when a bridge is present
 
 **`memento-tracker.js`** (UserPromptSubmit):
 - Reads the turn counter sidecar
 - Emits a MANDATORY WRITE prompt: full format on Turn 1, compressed on Turn 2+
 - Increments the turn counter
+- At ≥74% context: appends a `[BRIDGE]` directive — Claude writes `ctx_bridge.json` with files, next step, and current error
+- On context drop ≥20pp (signals post-compaction recovery): injects the bridge as `[CTX BRIDGE]` and deletes the bridge file
 - This prompt is invisible to the user
 
 **`memento-precompact.js`** (PreCompact):

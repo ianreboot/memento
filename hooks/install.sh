@@ -11,7 +11,7 @@
 #
 # What this does:
 #   1. Copies hook files into ~/.claude/hooks/
-#   2. Wires SessionStart and UserPromptSubmit hooks in ~/.claude/settings.json
+#   2. Wires all four event hooks (SessionStart, UserPromptSubmit, PreCompact, SessionEnd) in ~/.claude/settings.json
 #   3. Backs up settings.json before modifying it
 #
 # What this does NOT do:

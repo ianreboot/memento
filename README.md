@@ -74,6 +74,26 @@ Compaction happens
 
 **Push-based recovery — this is the key design decision.** The hook injects the journal automatically on every session start, including after compaction. Claude does not need to know to ask for context; it arrives before the first message. Pull-based memory tools require the AI to query a store — but a just-compacted Claude has no memory of what to query. Memento sidesteps this entirely.
 
+## Context Bridge
+
+When context usage reaches 74%, memento automatically writes a pre-compaction snapshot called `ctx_bridge.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
+
+```json
+{
+  "files": ["src/auth.js", "tests/auth.test.js"],
+  "next":  "fix the 401 on line 47, then run npm test",
+  "err":   "TypeError: Cannot read property 'token' of undefined",
+  "pct":   76,
+  "at":    "2026-05-23T14:30:00Z"
+}
+```
+
+**Lifecycle:** UserPromptSubmit detects ≥74% context usage (or a large cache-write spike past 60%) → injects `[BRIDGE]` directive → Claude writes the bridge file → PreCompact hook notes it exists → SessionStart reads and injects it into the recovery prompt, then deletes it.
+
+**User-visible impact:** None. The bridge is written and consumed silently. On recovery, the extra `[CTX BRIDGE]` line appears in the injected context alongside the normal `why` arc.
+
+**Override:** Set `MEMENTO_CONTEXT_WINDOW_TOKENS=<n>` if your model has a different context window than the 200,000-token default.
+
 Nothing appears in your conversation. The journal is a background process. Journal writes appear as Write tool calls in your tool stream — visible confirmation that memento is saving your work, not conversation content.
 
 ## What Recovery Looks Like

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.4.1)
+// memento — UserPromptSubmit hook (v0.5.0)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -22,6 +22,12 @@ const {
   getJournalPath,
   getTurnSidecarPath,
   readJournal,
+  getCtxBridgePath,
+  findLatestJsonl,
+  readLastUsage,
+  CONTEXT_WINDOW,
+  BRIDGE_TRIGGER_PCT,
+  BRIDGE_SPIKE_TOKENS,
 } = require('./memento-config');
 
 let rawInput = '';
@@ -57,11 +63,39 @@ function run(rawInput) {
   const why     = journal && typeof journal.why === 'string' ? journal.why : null;
   const when    = journal && journal.when ? journal.when : null;
 
+  // Compute context usage from the active session JSONL
+  const jsonlPath = findLatestJsonl(claudeDir);
+  let usedPct = null, cacheWrite = 0;
+  if (jsonlPath) {
+    const usage = readLastUsage(jsonlPath);
+    if (usage) {
+      const total = (usage.input_tokens || 0) +
+                    (usage.cache_read_input_tokens || 0) +
+                    (usage.cache_creation_input_tokens || 0);
+      usedPct    = total / CONTEXT_WINDOW * 100;
+      cacheWrite = usage.cache_creation_input_tokens || 0;
+    }
+  }
+
+  const bridgePath   = getCtxBridgePath(claudeDir);
+  const bridgeExists = (() => {
+    try { return fs.lstatSync(bridgePath).isFile(); } catch (e) { return false; }
+  })();
+
+  const shouldBridge = usedPct !== null && (
+    usedPct >= BRIDGE_TRIGGER_PCT ||
+    (cacheWrite > BRIDGE_SPIKE_TOKENS && usedPct > 60 && !bridgeExists)
+  );
+
   let prompt;
   if (turn === 0) {
     prompt = buildTurn1Prompt(journalPath, why, when);
   } else {
     prompt = buildTurnNPrompt(journalPath, nextTurn, why);
+  }
+
+  if (shouldBridge) {
+    prompt += '\n' + buildBridgeDirective(bridgePath, usedPct);
   }
 
   process.stdout.write(JSON.stringify({
@@ -98,6 +132,13 @@ function buildTurn1Prompt(journalPath, why, when) {
   return `${header}\nWhy are we doing this? Previous: "${why}"\n` +
          `Write your current why. [GUESS] always valid. Same is fine.\n` +
          `{"why":"...","when":"<ISO>","why_history":[{"w":"${why}","t":"${prevWhen}"}]}`;
+}
+
+// [BRIDGE] directive — appended to prompt when context is ≥74% or cache-write spike detected
+function buildBridgeDirective(bridgePath, pct) {
+  return `[BRIDGE] context at ${pct.toFixed(1)}% — write ctx_bridge.json before next tool call. path: ${bridgePath}\n` +
+    `List files you are actively editing, your exact next step, current error or null. Full overwrite.\n` +
+    `{"files":["path1"],"next":"<exact next step>","err":null,"pct":${Math.round(pct)},"at":"<ISO>"}`;
 }
 
 // Turn N: compressed single-line prompt (Variants 4/5/6 based on journal state)

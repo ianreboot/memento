@@ -18,3 +18,7 @@ before your next tool call. Always pick one — never skip:
 Append to why_history only when the why value changes (not on same-value rewrites). Cap 10 entries; drop oldest when exceeded.
 why max 200 characters. Journal path is always in the [MEMENTO] header — do not derive it yourself.
 If the session is ending (user says goodbye, task complete, no more work), update why: "Done: X. Next: Y." or "Stopped mid-X, resume at Y."
+
+When [BRIDGE] appears: write ctx_bridge.json at the path shown before your next tool call.
+List files you are actively editing (5 max). next: exact action to resume. err: current error
+or null. Write both journal and bridge before any tool calls when [BRIDGE] is present.

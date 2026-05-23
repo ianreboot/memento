@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — shared configuration and journal utilities (v0.4.0)
+// memento — shared configuration and journal utilities (v0.5.0)
 //
 // Handles:
 //   - Instance tag derivation (which journal file to use; one file per OS user)
@@ -7,7 +7,7 @@
 //   - Safe atomic reads and writes (symlink-safe, size-capped)
 //   - Turn counter sidecar path (for T1 vs T2+ discrimination)
 //
-// v0.4.0 schema: { why, when, why_history }
+// v0.5.0 schema: { why, when, why_history } + ctx_bridge: { files, next, err, pct, at }
 // Previous schema (mission/done/plan/wip) removed. Old journal files without
 // a 'why' field are treated as non-existent — the Turn 1 / No Journal prompt
 // fires and Claude creates a fresh journal at the same path.
@@ -53,6 +53,20 @@ const TAG_BLOCKLIST = new Set([
 ]);
 
 const DEBUG = process.env.MEMENTO_DEBUG === '1';
+
+// Context window size (tokens). Env override consistent with MEMENTO_MAX_FILE_KB pattern.
+// Default 200000 is correct for all Claude 3+ and 4+ model families.
+const CONTEXT_WINDOW = parseInt(process.env.MEMENTO_CONTEXT_WINDOW_TOKENS || '', 10) || 200000;
+
+// ctx_bridge field limits
+const MAX_BRIDGE_NEXT_CHARS = 300;
+const MAX_BRIDGE_FILES      = 5;
+const MAX_BRIDGE_FILE_CHARS = 100;
+const MAX_BRIDGE_ERR_CHARS  = 300;
+
+// Trigger thresholds for [BRIDGE] directive
+const BRIDGE_TRIGGER_PCT  = 74;   // % of context window used — 10pp before ~84% compaction
+const BRIDGE_SPIKE_TOKENS = 3000; // cache_write spike guard threshold
 
 // ---------------------------------------------------------------------------
 // Instance tag derivation (used for journal FILE PATH)
@@ -303,6 +317,195 @@ function writeJournal(journalPath, data) {
 }
 
 // ---------------------------------------------------------------------------
+// ctx_bridge helpers
+// ---------------------------------------------------------------------------
+
+// Returns the path to the ctx_bridge file (~/.claude/.memento/ctx_bridge.json).
+// Creates the .memento directory if needed (silent-fail).
+function getCtxBridgePath(claudeDir) {
+  const dir = path.join(claudeDir, '.memento');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  return path.join(dir, 'ctx_bridge.json');
+}
+
+// Walk ~/.claude/projects/ one level deep (hash dirs), find the most recently
+// modified .jsonl file. Prefers files modified within the last 5 minutes to
+// avoid picking up a sibling docker's JSONL on multi-instance systems.
+// Falls back to global most-recent if no file satisfies the recency filter.
+// Silent-fails → returns null.
+function findLatestJsonl(claudeDir) {
+  const projectsDir = path.join(claudeDir, 'projects');
+  const fiveMinAgo  = Date.now() - 300000;
+  let latest = null, latestMtime = 0;
+  let fallback = null, fallbackMtime = 0;
+  try {
+    for (const hash of fs.readdirSync(projectsDir)) {
+      const hashDir = path.join(projectsDir, hash);
+      try {
+        const hStat = fs.lstatSync(hashDir);
+        if (!hStat.isDirectory()) continue;
+      } catch (e) { continue; }
+      try {
+        for (const file of fs.readdirSync(hashDir)) {
+          if (!file.endsWith('.jsonl')) continue;
+          const fp = path.join(hashDir, file);
+          try {
+            const st = fs.statSync(fp);
+            if (st.mtimeMs > fallbackMtime) {
+              fallbackMtime = st.mtimeMs; fallback = fp;
+            }
+            if (st.mtimeMs > fiveMinAgo && st.mtimeMs > latestMtime) {
+              latestMtime = st.mtimeMs; latest = fp;
+            }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return latest || fallback;
+}
+
+// Read the last 32KB of a JSONL file, reverse-scan lines for the most recent
+// assistant usage object. Returns the usage object or null.
+function readLastUsage(jsonlPath) {
+  try {
+    const stat = fs.statSync(jsonlPath);
+    const tail = Math.min(32768, stat.size);
+    const buf  = Buffer.alloc(tail);
+    const fd   = fs.openSync(jsonlPath, 'r');
+    try { fs.readSync(fd, buf, 0, tail, stat.size - tail); }
+    finally { fs.closeSync(fd); }
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'assistant' && obj.message && obj.message.usage)
+          return obj.message.usage;
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Normalize bridge data before writing. Enforces field limits.
+function normalizeBridge(data) {
+  const b = {};
+  const rawFiles = Array.isArray(data.files) ? data.files : [];
+  b.files = rawFiles
+    .filter(f => typeof f === 'string')
+    .slice(0, MAX_BRIDGE_FILES)
+    .map(f => sanitizeLine(f.slice(0, MAX_BRIDGE_FILE_CHARS)));
+  b.next = typeof data.next === 'string'
+    ? sanitizeLine(data.next.slice(0, MAX_BRIDGE_NEXT_CHARS))
+    : '';
+  b.err = typeof data.err === 'string'
+    ? sanitizeLine(data.err.slice(0, MAX_BRIDGE_ERR_CHARS))
+    : null;
+  b.pct = typeof data.pct === 'number' ? data.pct : null;
+  b.at  = typeof data.at === 'string' ? data.at : new Date().toISOString();
+  return b;
+}
+
+// Write ctx_bridge.json atomically (same symlink-safe pattern as writeJournal).
+// Full overwrite — bridge is always current at write time.
+// Silent-fails on any filesystem error.
+function writeCtxBridge(bridgePath, data) {
+  let tempPath;
+  try {
+    const bridgeDir  = path.dirname(bridgePath);
+    const bridgeBase = path.basename(bridgePath);
+
+    fs.mkdirSync(bridgeDir, { recursive: true });
+
+    let realDir;
+    try {
+      const lstat = fs.lstatSync(bridgeDir);
+      if (lstat.isSymbolicLink()) {
+        realDir = fs.realpathSync(bridgeDir);
+        const realStat = fs.statSync(realDir);
+        if (!realStat.isDirectory()) return;
+        if (typeof process.getuid === 'function') {
+          if (realStat.uid !== process.getuid()) return;
+        } else {
+          const normalizedReal = path.resolve(realDir).toLowerCase();
+          const normalizedHome = path.resolve(os.homedir()).toLowerCase();
+          if (!normalizedReal.startsWith(normalizedHome + path.sep) && normalizedReal !== normalizedHome) return;
+        }
+      } else {
+        realDir = bridgeDir;
+      }
+    } catch (e) { return; }
+
+    const realBridgePath = path.join(realDir, bridgeBase);
+    try {
+      if (fs.lstatSync(realBridgePath).isSymbolicLink()) return;
+    } catch (e) {
+      if (e.code !== 'ENOENT') return;
+    }
+
+    const safe = normalizeBridge(data);
+    const json = JSON.stringify(safe, null, 2);
+
+    tempPath = path.join(realDir, `.ctx-bridge.${process.pid}.${Date.now()}.tmp`);
+    const O_NOFOLLOW = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    const openFlags  = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW;
+    let fd;
+    try {
+      fd = fs.openSync(tempPath, openFlags, 0o600);
+      fs.writeSync(fd, json);
+      try { fs.fchmodSync(fd, 0o600); } catch (e) {}
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch (e) {}
+    }
+    fs.renameSync(tempPath, realBridgePath);
+
+  } catch (e) {
+    if (tempPath) { try { fs.unlinkSync(tempPath); } catch (_) {} }
+    if (DEBUG) process.stderr.write(`[memento] writeCtxBridge error: ${e.message}\n`);
+  }
+}
+
+// Read ctx_bridge.json (same lstat+O_NOFOLLOW pattern as readJournal).
+// Returns object if valid (has files array + next string), null otherwise.
+// No truncation on read — normalization happens at write time only.
+function readCtxBridge(bridgePath) {
+  try {
+    let st;
+    try { st = fs.lstatSync(bridgePath); } catch (e) { return null; }
+    if (st.isSymbolicLink() || !st.isFile()) return null;
+
+    const O_NOFOLLOW = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    let fd, raw;
+    try {
+      fd = fs.openSync(bridgePath, fs.constants.O_RDONLY | O_NOFOLLOW);
+      raw = fs.readFileSync(fd, 'utf8');
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch (e) {}
+    }
+
+    const obj = JSON.parse(raw);
+    if (typeof obj !== 'object' || obj === null) return null;
+    if (!Array.isArray(obj.files)) return null;
+    if (typeof obj.next !== 'string') return null;
+    return obj;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Delete ctx_bridge.json. Verifies it is a regular file (not symlink) before unlinking.
+// Silent-fail.
+function deleteCtxBridge(bridgePath) {
+  try {
+    const st = fs.lstatSync(bridgePath);
+    if (st.isSymbolicLink() || !st.isFile()) return;
+    fs.unlinkSync(bridgePath);
+  } catch (e) {}
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -315,8 +518,21 @@ module.exports = {
   sanitizeLine,
   readJournal,
   writeJournal,
+  getCtxBridgePath,
+  findLatestJsonl,
+  readLastUsage,
+  writeCtxBridge,
+  readCtxBridge,
+  deleteCtxBridge,
   DEBUG,
   MAX_WHY_CHARS,
   MAX_WHY_HISTORY,
   MAX_JOURNAL_BYTES,
+  CONTEXT_WINDOW,
+  BRIDGE_TRIGGER_PCT,
+  BRIDGE_SPIKE_TOKENS,
+  MAX_BRIDGE_NEXT_CHARS,
+  MAX_BRIDGE_FILES,
+  MAX_BRIDGE_FILE_CHARS,
+  MAX_BRIDGE_ERR_CHARS,
 };

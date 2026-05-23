@@ -346,6 +346,163 @@ test('invalid stdin: exits cleanly', () => {
 });
 
 // ---------------------------------------------------------------------------
+// memento-activate.js — ctx_bridge injection
+// ---------------------------------------------------------------------------
+
+console.log('\nmemento-activate.js (ctx_bridge)');
+
+function writeCtxBridgeFile(dir, overrides = {}) {
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const bridge = Object.assign({
+    files: ['/foo.js'],
+    next:  'run tests',
+    err:   null,
+    pct:   74,
+    at:    '2026-05-23T00:00:00Z',
+  }, overrides);
+  const p = path.join(mementoDir, 'ctx_bridge.json');
+  fs.writeFileSync(p, JSON.stringify(bridge, null, 2));
+  return p;
+}
+
+test('recovery + bridge present → output contains [CTX BRIDGE]', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  writeCtxBridgeFile(dir);
+  const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.stdout.includes('[CTX BRIDGE]'), 'must include [CTX BRIDGE] when bridge present');
+  assert.ok(r.stdout.includes('/foo.js'), 'must show files from bridge');
+  assert.ok(r.stdout.includes('run tests'), 'must show next from bridge');
+});
+
+test('recovery + bridge present → bridge file deleted after hook runs', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const bridgePath = writeCtxBridgeFile(dir);
+  assert.ok(fs.existsSync(bridgePath), 'bridge must exist before hook');
+  runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(!fs.existsSync(bridgePath), 'bridge must be deleted after recovery hook');
+});
+
+test('recovery + bridge absent → output does NOT contain [CTX BRIDGE]', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'must not show [CTX BRIDGE] when no bridge');
+});
+
+test('startup + bridge present → [CTX BRIDGE] NOT injected, file NOT deleted', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const bridgePath = writeCtxBridgeFile(dir);
+  const r = runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(!r.stdout.includes('[CTX BRIDGE]'), 'startup must not inject bridge');
+  assert.ok(fs.existsSync(bridgePath), 'bridge must persist on startup (not compaction)');
+});
+
+test('bridge with no pct field → renders ?% not undefined%', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  writeCtxBridgeFile(dir, { pct: undefined });
+  const r = runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(r.stdout.includes('?%'), 'missing pct must render as ?%');
+  assert.ok(!r.stdout.includes('undefined%'), 'must not render undefined%');
+});
+
+test('stale bridge lifecycle: startup does not consume, compact does', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const bridgePath = writeCtxBridgeFile(dir);
+
+  // Startup: bridge persists
+  runHook('memento-activate.js', '{"source":"startup"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(fs.existsSync(bridgePath), 'bridge must persist after startup');
+
+  // Compact: bridge consumed
+  runHook('memento-activate.js', '{"source":"compact"}', { CLAUDE_CONFIG_DIR: dir });
+  assert.ok(!fs.existsSync(bridgePath), 'bridge must be consumed on compact');
+});
+
+// ---------------------------------------------------------------------------
+// memento-tracker.js — ctx_bridge directive
+// ---------------------------------------------------------------------------
+
+console.log('\nmemento-tracker.js (ctx_bridge)');
+
+const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'sample-session.jsonl');
+
+function writeFixtureJsonl(dir, content) {
+  const projDir = path.join(dir, 'projects', 'abc123');
+  fs.mkdirSync(projDir, { recursive: true });
+  const p = path.join(projDir, 'session.jsonl');
+  fs.writeFileSync(p, content);
+  return p;
+}
+
+test('[BRIDGE] fires when JSONL at 78% used', () => {
+  const dir = tmpDir();
+  writeTurnSidecar(dir, 0);
+  writeFixtureJsonl(dir, require('fs').readFileSync(FIXTURE_JSONL, 'utf8'));
+  const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const ctx = parseAdditionalContext(r.stdout);
+  assert.ok(ctx !== null);
+  assert.ok(ctx.includes('[BRIDGE]'), 'must include [BRIDGE] directive at 78%');
+});
+
+test('[BRIDGE] includes the bridge file path', () => {
+  const dir = tmpDir();
+  writeTurnSidecar(dir, 0);
+  writeFixtureJsonl(dir, require('fs').readFileSync(FIXTURE_JSONL, 'utf8'));
+  const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const ctx = parseAdditionalContext(r.stdout);
+  assert.ok(ctx !== null);
+  assert.ok(ctx.includes('ctx_bridge.json'), 'must include ctx_bridge.json path in directive');
+});
+
+test('[BRIDGE] does not fire when JSONL at 60% used', () => {
+  const dir = tmpDir();
+  writeTurnSidecar(dir, 0);
+  // 60% = 120000 tokens: input=1, cache_read=119899, cache_write=100 (not a spike) → total 120000
+  const lowUsage = '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":119899,"cache_creation_input_tokens":100,"output_tokens":200}}}';
+  writeFixtureJsonl(dir, lowUsage);
+  const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const ctx = parseAdditionalContext(r.stdout);
+  assert.ok(ctx !== null);
+  assert.ok(!ctx.includes('[BRIDGE]'), 'must not fire [BRIDGE] at 60% without spike');
+});
+
+test('spike guard fires: 65% used + cacheWrite=5000 + no bridge file', () => {
+  const dir = tmpDir();
+  writeTurnSidecar(dir, 0);
+  // 65% = 130000 tokens: input=1, cache_read=124999, cache_write=5000 → total 130000
+  const spikeUsage = '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":124999,"cache_creation_input_tokens":5000,"output_tokens":200}}}';
+  writeFixtureJsonl(dir, spikeUsage);
+  const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const ctx = parseAdditionalContext(r.stdout);
+  assert.ok(ctx !== null);
+  assert.ok(ctx.includes('[BRIDGE]'), 'spike guard must fire [BRIDGE] at 65% + spike');
+});
+
+test('spike guard skips if bridge file already exists', () => {
+  const dir = tmpDir();
+  writeTurnSidecar(dir, 0);
+  // 65% + spike, but bridge already exists
+  const spikeUsage = '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":124999,"cache_creation_input_tokens":5000,"output_tokens":200}}}';
+  writeFixtureJsonl(dir, spikeUsage);
+  // Pre-create bridge file
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), '{"files":[],"next":"test","err":null,"pct":65,"at":"2026-05-23T00:00:00Z"}');
+  const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  const ctx = parseAdditionalContext(r.stdout);
+  assert.ok(ctx !== null);
+  // At 65% it won't fire the primary trigger; spike guard skips because bridge exists
+  assert.ok(!ctx.includes('[BRIDGE]'), 'spike guard must skip if bridge already exists');
+});
+
+// ---------------------------------------------------------------------------
 // memento-precompact.js (PreCompact)
 // ---------------------------------------------------------------------------
 
@@ -406,6 +563,40 @@ test('precompact: silent fail on error (exits 0)', () => {
   // No .memento dir, no journal — still exits 0 cleanly
   const r = runHook('memento-precompact.js', 'bad json', { CLAUDE_CONFIG_DIR: dir });
   assert.strictEqual(r.status, 0);
+});
+
+test('precompact + bridge present → output contains "ctx_bridge written at"', () => {
+  const dir = tmpDir();
+  writeV4Journal(dir);
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), '{"files":["/a.js"],"next":"test","err":null,"pct":78,"at":"2026-05-23T00:00:00Z"}');
+  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.stdout.includes('ctx_bridge written at'), 'must say ctx_bridge written at when bridge present');
+});
+
+test('precompact + bridge absent → output contains "read ctx_bridge.json if present"', () => {
+  const dir = tmpDir();
+  const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir });
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.stdout.includes('read ctx_bridge.json if present'), 'must say read ctx_bridge.json if present when absent');
+});
+
+test('precompact: neither branch uses hedging language ("may have been" must not appear)', () => {
+  const dir1 = tmpDir();
+  const dir2 = tmpDir();
+
+  // With bridge
+  const mementoDir = path.join(dir1, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), '{"files":[],"next":"test","err":null,"pct":74,"at":"2026-05-23T00:00:00Z"}');
+  const r1 = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir1 });
+  assert.ok(!r1.stdout.includes('may have been'), 'with-bridge output must not hedge with "may have been"');
+
+  // Without bridge
+  const r2 = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir2 });
+  assert.ok(!r2.stdout.includes('may have been'), 'no-bridge output must not hedge with "may have been"');
 });
 
 // ---------------------------------------------------------------------------

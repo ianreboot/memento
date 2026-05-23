@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.4.1)
+// memento — PreCompact hook (v0.5.0)
 //
 // Runs before context compaction. Always emits a MANDATORY WRITE prompt so
 // Claude records its current 'why' before context clears. The write is
@@ -15,6 +15,8 @@ const {
   getInstanceTag,
   getJournalPath,
   readJournal,
+  getCtxBridgePath,
+  readCtxBridge,
 } = require('./memento-config.js');
 
 let rawInput = '';
@@ -54,6 +56,13 @@ function main() {
               `{"why":"...","when":"<ISO>","why_history":[...append {"w":"${why}","t":"${prevWhen}"} only if changed...]}`;
   }
 
-  process.stdout.write(message + '\n');
+  // Definitive recovery instruction — both branches are actionable (Hypothesis A validated)
+  const bridgePath = getCtxBridgePath(claudeDir);
+  const bridge     = readCtxBridge(bridgePath);
+  const bridgeNote = bridge
+    ? `\nctx_bridge written at ${bridge.pct ?? '?'}% — on return: read it before your first tool call.`
+    : `\nOn return: read ctx_bridge.json if present — check before your first tool call.`;
+
+  process.stdout.write(message + bridgeNote + '\n');
   process.exit(0);
 }

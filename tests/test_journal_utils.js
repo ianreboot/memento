@@ -14,8 +14,16 @@ const {
   sanitizeLine,
   readJournal,
   writeJournal,
+  getCtxBridgePath,
+  writeCtxBridge,
+  readCtxBridge,
+  deleteCtxBridge,
+  readLastUsage,
+  findLatestJsonl,
   MAX_WHY_CHARS,
   MAX_WHY_HISTORY,
+  MAX_BRIDGE_NEXT_CHARS,
+  MAX_BRIDGE_FILES,
 } = require('../hooks/memento-config.js');
 
 let passed = 0;
@@ -283,6 +291,188 @@ test('writeJournal filters invalid why_history entries (no w field)', () => {
   assert.strictEqual(result.why_history.length, 2, 'invalid entries must be filtered out');
   assert.strictEqual(result.why_history[0].w, 'valid');
   assert.strictEqual(result.why_history[1].w, 'also-valid');
+});
+
+// ---------------------------------------------------------------------------
+// ctx_bridge helpers
+// ---------------------------------------------------------------------------
+
+console.log('\nctx_bridge helpers');
+
+test('getCtxBridgePath returns {claudeDir}/.memento/ctx_bridge.json', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  assert.strictEqual(p, path.join(dir, '.memento', 'ctx_bridge.json'));
+});
+
+test('writeCtxBridge + readCtxBridge round-trip (valid data)', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  const data = { files: ['/foo.js', '/bar.js'], next: 'run tests', err: null, pct: 74, at: '2026-05-23T00:00:00Z' };
+  writeCtxBridge(p, data);
+  const result = readCtxBridge(p);
+  assert.ok(result !== null, 'must read back written bridge');
+  assert.deepStrictEqual(result.files, data.files);
+  assert.strictEqual(result.next, data.next);
+  assert.strictEqual(result.err, data.err);
+  assert.strictEqual(result.pct, data.pct);
+});
+
+test('readCtxBridge returns null for missing file', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, '.memento', 'ctx_bridge.json');
+  assert.strictEqual(readCtxBridge(p), null);
+});
+
+test('readCtxBridge returns null for symlink', () => {
+  const dir = tmpDir();
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const real = path.join(mementoDir, 'real.json');
+  const link = path.join(mementoDir, 'ctx_bridge.json');
+  fs.writeFileSync(real, JSON.stringify({ files: [], next: 'ok', err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
+  try { fs.symlinkSync(real, link); } catch (e) { return; }
+  assert.strictEqual(readCtxBridge(link), null, 'symlink must return null');
+});
+
+test('readCtxBridge returns null for invalid JSON', () => {
+  const dir = tmpDir();
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const p = path.join(mementoDir, 'ctx_bridge.json');
+  fs.writeFileSync(p, 'not json');
+  assert.strictEqual(readCtxBridge(p), null);
+});
+
+test('readCtxBridge returns null if files field missing', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ next: 'ok', err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
+  assert.strictEqual(readCtxBridge(p), null, 'missing files field must return null');
+});
+
+test('readCtxBridge returns null if next field missing', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ files: [], err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
+  assert.strictEqual(readCtxBridge(p), null, 'missing next field must return null');
+});
+
+test('readCtxBridge returns object without truncation (normalization is write-side only)', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  const longNext = 'a'.repeat(500);
+  writeCtxBridge(p, { files: [], next: longNext, err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  const result = readCtxBridge(p);
+  // Write side truncates to MAX_BRIDGE_NEXT_CHARS — read side returns as-is
+  assert.ok(result !== null);
+  assert.strictEqual(result.next.length, MAX_BRIDGE_NEXT_CHARS, 'truncated at write time, not read time');
+});
+
+test('readCtxBridge returns object even without pct field (pct is optional)', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ files: ['/a.js'], next: 'resume', err: null, at: '2026-05-23T00:00:00Z' }));
+  const result = readCtxBridge(p);
+  assert.ok(result !== null, 'bridge without pct field must still be valid');
+  assert.strictEqual(result.pct, undefined);
+});
+
+test('writeCtxBridge truncates next to MAX_BRIDGE_NEXT_CHARS at write time', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  writeCtxBridge(p, { files: [], next: 'x'.repeat(MAX_BRIDGE_NEXT_CHARS + 100), err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  const result = readCtxBridge(p);
+  assert.ok(result !== null);
+  assert.ok(result.next.length <= MAX_BRIDGE_NEXT_CHARS);
+});
+
+test('writeCtxBridge caps files to MAX_BRIDGE_FILES entries at write time', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  const files = ['/a.js', '/b.js', '/c.js', '/d.js', '/e.js', '/f.js', '/g.js'];
+  writeCtxBridge(p, { files, next: 'test', err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  const result = readCtxBridge(p);
+  assert.ok(result !== null);
+  assert.ok(result.files.length <= MAX_BRIDGE_FILES);
+});
+
+test('deleteCtxBridge removes file, returns silently on missing', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir);
+  writeCtxBridge(p, { files: [], next: 'test', err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  assert.ok(fs.existsSync(p), 'file must exist before delete');
+  deleteCtxBridge(p);
+  assert.ok(!fs.existsSync(p), 'file must be gone after delete');
+  // Second call on missing file must not throw
+  assert.doesNotThrow(() => deleteCtxBridge(p));
+});
+
+// ---------------------------------------------------------------------------
+// readLastUsage
+// ---------------------------------------------------------------------------
+
+console.log('\nreadLastUsage');
+
+const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'sample-session.jsonl');
+
+test('readLastUsage returns correct usage from fixture JSONL', () => {
+  const usage = readLastUsage(FIXTURE_JSONL);
+  assert.ok(usage !== null, 'must return usage object');
+  // Last turn: input=1, cache_read=99000, cache_write=57000 → total 156001 ~ 78%
+  assert.strictEqual(usage.input_tokens, 1);
+  assert.strictEqual(usage.cache_read_input_tokens, 99000);
+  assert.strictEqual(usage.cache_creation_input_tokens, 57000);
+});
+
+test('readLastUsage returns null for missing file', () => {
+  assert.strictEqual(readLastUsage('/nonexistent/path.jsonl'), null);
+});
+
+test('readLastUsage returns null for empty file', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'empty.jsonl');
+  fs.writeFileSync(p, '');
+  assert.strictEqual(readLastUsage(p), null);
+});
+
+test('readLastUsage handles JSONL with a line longer than 16KB', () => {
+  // The fixture has a line with 17KB of padding — readLastUsage must still find last usage
+  const usage = readLastUsage(FIXTURE_JSONL);
+  assert.ok(usage !== null, 'must handle lines > 16KB');
+  // Must return the LAST usage (turn 3), not turn 2
+  assert.strictEqual(usage.cache_creation_input_tokens, 57000, 'must return last usage, not the large-line turn');
+});
+
+// ---------------------------------------------------------------------------
+// findLatestJsonl
+// ---------------------------------------------------------------------------
+
+console.log('\nfindLatestJsonl');
+
+test('findLatestJsonl returns most-recently-modified JSONL from projects dir structure', () => {
+  const dir = tmpDir();
+  const projDir = path.join(dir, 'projects', 'abc123');
+  fs.mkdirSync(projDir, { recursive: true });
+  const p = path.join(projDir, 'session.jsonl');
+  fs.writeFileSync(p, '{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":1}}}');
+  // Use current time so it's within 5-min window
+  const result = findLatestJsonl(dir);
+  assert.strictEqual(result, p);
+});
+
+test('findLatestJsonl returns null when no JSONL files exist', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'projects'), { recursive: true });
+  assert.strictEqual(findLatestJsonl(dir), null);
+});
+
+test('findLatestJsonl returns null when projects dir does not exist', () => {
+  const dir = tmpDir();
+  assert.strictEqual(findLatestJsonl(dir), null);
 });
 
 // ---------------------------------------------------------------------------

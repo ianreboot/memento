@@ -114,14 +114,15 @@ After compaction fires, Claude sees this injected silently into its system conte
 [MEMENTO] Recovering | path: /home/alice/.claude/.memento/alice.json
 Why: "fix auth middleware, mobile 401s — staging only, no token format changes" | Set: 2026-05-21T14:00:00Z
 Arc: "setup project" → "implement auth pipeline" → "fix auth middleware, mobile 401s — staging only, no token format changes"
-MANDATORY WRITE — Why are we doing this? Confirm or update why before your first tool call. [GUESS] always valid.
+MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not action) before your first tool call. [GUESS] always valid.
+node ~/.claude/hooks/memento-write-why.js '<your why>'
 ```
 
 Claude reads this before the first post-compaction message arrives and resumes with the correct intent — including constraints — without asking you to re-explain anything.
 
 ## How Reliable Is It?
 
-Writes are mandatory every turn. Before every response, Claude receives a MANDATORY WRITE prompt and must write `{why, when, why_history}` to disk. [GUESS] is always valid — Claude never gets stuck deciding what to write, even in sessions where intent has not been stated explicitly.
+Writes are mandatory every turn. Before every response, Claude receives a MANDATORY WRITE prompt and must run the write command to capture current intent to disk. [GUESS] is always valid — Claude never gets stuck deciding what to write, even in sessions where intent has not been stated explicitly.
 
 To see what memento has saved at any point: `"what does memento have on this session?"` Claude reads and displays the journal directly.
 

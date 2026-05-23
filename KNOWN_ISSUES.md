@@ -33,3 +33,15 @@ On Windows, `O_NOFOLLOW` is not available (falls back to 0). The TOCTOU window b
 If you used memento before v0.1.0, you may have journal files from an earlier naming scheme (named after git repos rather than your OS username). These are inert — hooks will not read or write them — but they sit in `~/.claude/.memento/` taking up space.
 
 **Cleanup**: Review files in `~/.claude/.memento/` and delete any that don't match your OS username.
+
+## 6. Context bridge coverage across fast-growing sessions
+
+The tracker emits a `[BRIDGE]` directive when context reaches 74% at the start of a user turn. For sessions where context grows quickly within a single response turn — reading many large files or processing large API responses in sequence — the tracker's turn-boundary check may not fire before auto-compaction triggers.
+
+**Coverage**: The PreCompact hook handles this automatically. When compaction fires, the hook uses AI extraction from the session transcript to write the bridge directly, independent of the tracker. The bridge will be present at recovery even when the tracker directive was never reached.
+
+## 7. Session exit bridge contains intent only (not specific files or error)
+
+When a session ends cleanly (user exits Claude Code) without having compacted, the SessionEnd hook writes a minimal bridge containing only `journal.why` as the `next` field. Files being edited and current error state are not captured in this path.
+
+**Coverage**: For sessions that exit cleanly at low context (below 74%), this bridge still provides correct intent direction for the next session. Sessions that hit 74% context before exiting will have a richer bridge from the tracker or PreCompact hook. The SessionEnd bridge is the last-resort fallback and is not written if a richer bridge already exists.

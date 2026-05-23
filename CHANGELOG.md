@@ -1,5 +1,112 @@
 # Changelog
 
+## v0.5.6 — 2026-05-23
+
+Bridge consumption is now source-agnostic: `memento-activate.js` injects and deletes
+`ctx_bridge.json` whenever the file is present, regardless of the session `source` field.
+Previously only consumed on `source=startup`, leaving bridges written by the PreCompact
+hook unconsumed when sessions returned via `source=compact`.
+
+- **Fix**: `memento-activate.js` — remove `source=startup` gate on bridge consumption.
+  Bridge file existence is the signal; source field is not.
+- **Why this matters**: Manual `/compact` at low context (below 74%) and auto-compaction
+  via the PreCompact path both set `source=compact` on return. The bridge was present but
+  never injected. Removing the gate closes this gap for all compaction paths.
+- **No schema changes.** Bridge format and journal format unchanged.
+- **Tests**: 64 passing (updated activate bridge tests to reflect source-agnostic behavior).
+
+## v0.5.5 — 2026-05-23
+
+SessionEnd hook rewritten to write the bridge directly without spawning a subprocess.
+
+- **Fix**: `memento-sessionend.js` — replace `claude -p` subprocess with direct Node.js
+  file I/O using `journal.why` as the bridge `next` value.
+- **Why**: On session exit, spawned subprocesses are frequently killed before they can
+  complete. The OS terminates child processes when the parent exits; the 15s hook timeout
+  was not reliably honored. Result: bridge was not written on clean exit roughly half the
+  time. Direct file write completes in milliseconds and is 100% reliable.
+- **Trade-off**: Bridge written by SessionEnd contains intent (`next = journal.why`) but
+  not specific files or current error. Richer bridges from the tracker (74%+ threshold)
+  and PreCompact hook always take priority — the SessionEnd bridge is a fallback for
+  sessions that end cleanly without ever approaching the compaction threshold.
+- **No schema changes.** Bridge format unchanged; `files` is always `[]`.
+
+## v0.5.4 — 2026-05-23
+
+SessionEnd hook added. Closes the recovery gap for sessions that end without compacting.
+
+- **New hook**: `memento-sessionend.js` registered on `SessionEnd` event (fires on clean
+  exit, crash, and interrupt). Writes `ctx_bridge.json` from the session transcript via
+  `claude -p` AI extraction (same mechanism as PreCompact). Falls back to `journal.why`
+  if AI extraction fails or times out.
+- **Bridge priority preserved**: SessionEnd hook checks for existing bridge before writing.
+  A richer tracker bridge (74%+) or PreCompact bridge is never overwritten.
+- **plugin.json**: `SessionEnd` hook registered with 15s timeout (shorter than PreCompact's
+  35s to minimize visible exit delay).
+- **install.sh**: `memento-sessionend.js` added to `HOOK_FILES` array and all four
+  installer sections (download, uninstall, --force strip, wiring block).
+
+## v0.5.3 — 2026-05-23
+
+PreCompact hook upgraded to AI-quality bridge extraction.
+
+- **Upgrade**: `memento-precompact.js` — replaces the simple `[BRIDGE]` directive
+  (requiring Claude to write the bridge) with `claude -p` AI extraction from the session
+  transcript tail. Hook writes `ctx_bridge.json` directly — no Claude action needed.
+- **Why**: PreCompact is the last chance before compaction. If Claude is mid-task and
+  misses the `[BRIDGE]` directive, the hook catches it with its own AI extraction.
+- **Fake binary support**: `MEMENTO_CLAUDE_BIN` env var overrides the `claude` binary —
+  enables deterministic testing without a running Claude Code instance.
+- **Transcript fallback**: `transcript_path` from hook stdin JSON used when available;
+  falls back to `findLatestJsonl()` when empty (covers GH issue #13668).
+- **memento-config.js**: `getCtxBridgePath`, `writeCtxBridge`, `readCtxBridge`,
+  `deleteCtxBridge`, `findLatestJsonl`, `readLastUsage`, `CONTEXT_WINDOW` added.
+- Version string bumped to v0.5.3 in config.
+
+## v0.5.2 — 2026-05-23
+
+Compaction drop detection hardened for first-session-after-restart case.
+
+- **Fix**: `memento-tracker.js` — when `last_ctx` sidecar is absent (first turn of a
+  fresh session), fall back to bridge file presence + current pct below trigger threshold
+  as compaction signal. Covers the case where a prior session compacted, SessionEnd wrote
+  a bridge, and the tracker has no `last_ctx` to compute a drop from.
+- Threshold: `bridge present + current pct < BRIDGE_TRIGGER_PCT (74%)` → infer compaction.
+
+## v0.5.1 — 2026-05-23
+
+Context drop detection added to tracker. PreCompact always emits `[BRIDGE]`.
+
+- **New**: `memento-tracker.js` — compaction detection via ctx% drop. Reads `last_ctx`
+  sidecar from previous turn; if drop ≥ 20pp, reads and injects `ctx_bridge.json` into
+  the current turn's `additionalContext`, then deletes the bridge file. Covers inline
+  auto-compaction (where `SessionStart` does not fire).
+- **New**: `memento-precompact.js` — now unconditionally emits `[BRIDGE]` write directive,
+  even when the tracker bridge was not written (e.g. manual `/compact` below 74%).
+- **New**: `memento-config.js` — `getLastCtxPath`, `readLastCtxPct`, `writeLastCtxPct`,
+  `CTX_DROP_THRESHOLD=20`.
+- **Changed**: `memento-activate.js` — bridge injection moved to tracker; activate no
+  longer reads or deletes `ctx_bridge.json` (this is reversed in v0.5.6).
+
+## v0.5.0 — 2026-05-23
+
+Context bridge: structured pre-compaction snapshot captures exact resumption state.
+
+Intent alone (`why`) tells Claude what it was doing — but not which file it was editing,
+what line the error was on, or what the exact next step is. v0.5.0 adds a structured
+recovery snapshot written before compaction and injected at recovery.
+
+- **New**: `ctx_bridge.json` sidecar at `~/.claude/.memento/ctx_bridge.json`. Schema:
+  `{ files, next, err, pct, at }`.
+- **New**: `[BRIDGE]` directive in `memento-tracker.js` at ≥74% context (or cache-write
+  spike past 3000 tokens at ≥60%) — instructs Claude to write the bridge file.
+- **New**: Recovery injection in `memento-activate.js` — reads bridge on `source=startup`,
+  prepends `[CTX BRIDGE]` block to the session-start prompt.
+- **New**: `memento-config.js` — `BRIDGE_TRIGGER_PCT=74`, `BRIDGE_SPIKE_TOKENS=3000`,
+  `getCtxBridgePath`, `writeCtxBridge`, `readCtxBridge`, `deleteCtxBridge`.
+- **User-visible impact**: None during normal sessions. At recovery: `[CTX BRIDGE] Written
+  at X% | Files: ... | Next: "..." | Error: ...` appears alongside the normal `why` arc.
+
 ## v0.4.2 — 2026-05-22
 
 Installer bug fixes.

@@ -51,7 +51,7 @@ The best it can do is search for artifacts and reverse-engineer intent. That is 
 
 ## How It Works
 
-Memento uses three Claude Code hooks, a SKILL.md behavioral spec, and a small JSON journal file:
+Memento uses four Claude Code hooks, a SKILL.md behavioral spec, and a small JSON journal file:
 
 ```
 Session starts
@@ -67,9 +67,13 @@ Claude writes why+when+why_history to disk before responding
 
 Pre-compaction
   └── PreCompact hook fires → "MANDATORY WRITE — LAST WRITE OPPORTUNITY" prompt
+      Hook also writes a ctx_bridge snapshot via AI extraction from the session transcript
 
-Compaction happens
-  └── SessionStart fires again → previous why + intent arc re-injected → Claude resumes
+Session ends (clean exit, crash, or interrupt)
+  └── SessionEnd hook fires → writes minimal ctx_bridge from current journal intent
+
+Compaction happens / next session starts
+  └── SessionStart fires → previous why + intent arc re-injected → ctx_bridge injected if present
 ```
 
 **Push-based recovery — this is the key design decision.** The hook injects the journal automatically on every session start, including after compaction. Claude does not need to know to ask for context; it arrives before the first message. Pull-based memory tools require the AI to query a store — but a just-compacted Claude has no memory of what to query. Memento sidesteps this entirely.
@@ -88,7 +92,13 @@ When context usage reaches 74%, memento automatically writes a pre-compaction sn
 }
 ```
 
-**Lifecycle:** UserPromptSubmit detects ≥74% context usage (or a large cache-write spike past 60%) → injects `[BRIDGE]` directive → Claude writes the bridge file → PreCompact hook notes it exists → SessionStart reads and injects it into the recovery prompt, then deletes it.
+**Three safety nets ensure the bridge is written before any session end:**
+
+1. **At 74% context:** UserPromptSubmit detects ≥74% usage and injects a `[BRIDGE]` directive — Claude writes the bridge with exact files, next step, and current error.
+2. **Before compaction:** PreCompact hook uses AI extraction from the session transcript to write the bridge, even if Claude missed the 74% directive.
+3. **On clean exit:** SessionEnd hook writes a minimal bridge from the current journal intent — covering sessions that end without ever compacting.
+
+Only the richest available bridge is used. A bridge written at 74% by Claude is never overwritten by the hook fallbacks. On the next session start, the bridge is injected into recovery context and deleted.
 
 **User-visible impact:** None. The bridge is written and consumed silently. On recovery, the extra `[CTX BRIDGE]` line appears in the injected context alongside the normal `why` arc.
 
@@ -226,7 +236,7 @@ All settings are optional. Memento works out of the box with no configuration.
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
 | `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>.debug.json` |
 
-Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window.
+Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window. `MEMENTO_CLAUDE_BIN` overrides the `claude` binary used for transcript extraction in the PreCompact hook (useful for testing).
 
 **Shared accounts**: If multiple users or Claude windows share the same OS user account, set a unique `MEMENTO_INSTANCE_TAG` per instance (e.g. `MEMENTO_INSTANCE_TAG=alice` and `MEMENTO_INSTANCE_TAG=bob`).
 

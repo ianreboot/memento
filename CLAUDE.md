@@ -10,24 +10,36 @@ Hook-based, always-on, invisible to user. Public open-source.
 ```
 SessionStart hook
   └── memento-activate.js
-        reads journal → resets turn sidecar → writes MANDATORY WRITE prompt to stdout (invisible to user)
+        reads journal → resets turn sidecar → injects ctx_bridge if present (any source)
+        writes MANDATORY WRITE prompt to stdout (invisible to user)
 
 UserPromptSubmit hook
   └── memento-tracker.js
         reads turn sidecar → emits MANDATORY WRITE prompt (T1 full or T2+ compressed, invisible to user)
         increments turn sidecar
+        at ≥74% ctx: emits [BRIDGE] directive → Claude writes ctx_bridge.json
+        on ctx% drop ≥20pp: reads ctx_bridge.json → injects [CTX BRIDGE] block → deletes file
 
 PreCompact hook
   └── memento-precompact.js
         emits "MANDATORY WRITE — LAST WRITE OPPORTUNITY" to stdout (invisible to user)
+        writes ctx_bridge.json via claude -p AI extraction (skips if tracker bridge exists)
+
+SessionEnd hook
+  └── memento-sessionend.js
+        writes minimal ctx_bridge.json from journal.why (skips if any bridge exists)
+        no stdout — session is ending
 
 Claude (during response)
   └── Write tool
         writes {why, when, why_history} to journal path before first tool call
-        (instructed by SKILL.md — this is the ONLY journal writer)
+        writes ctx_bridge.json when [BRIDGE] directive appears
+        (instructed by SKILL.md — Claude is the only journal writer)
 ```
 
-**Key principle**: Hooks are readers and injectors. Claude is the only writer.
+**Key principle**: Hooks are readers and injectors. Claude is the only journal writer.
+Bridge writes come from three sources (Claude via [BRIDGE] directive, PreCompact hook,
+SessionEnd hook) — only the richest available bridge is used.
 
 ## File Structure
 
@@ -38,7 +50,8 @@ Claude (during response)
 | `hooks/memento-debug.js` | Debug shadow journal — loaded lazily when MEMENTO_DEBUG=1 | Yes |
 | `hooks/memento-activate.js` | SessionStart hook — reads journal, resets turn sidecar, injects prompt | Yes |
 | `hooks/memento-tracker.js` | UserPromptSubmit hook — emits per-turn MANDATORY WRITE prompt, increments sidecar | Yes |
-| `hooks/memento-precompact.js` | PreCompact hook — emits last-write-opportunity prompt before compaction | Yes |
+| `hooks/memento-precompact.js` | PreCompact hook — emits last-write-opportunity prompt + writes ctx_bridge via claude -p | Yes |
+| `hooks/memento-sessionend.js` | SessionEnd hook — writes minimal ctx_bridge from journal.why on session exit | Yes |
 | `hooks/package.json` | CommonJS marker — required for require() in hook scripts | No |
 | `hooks/install.sh` | Standalone installer (for non-plugin install path) | Yes |
 | `.claude-plugin/plugin.json` | Plugin manifest (used by claude plugin install) | Yes |

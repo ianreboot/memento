@@ -17,7 +17,7 @@ This is loaded into Claude's context at every session start (the skill is always
 
 ### 2. The hooks (`hooks/`)
 
-Three hooks run automatically on every Claude Code session:
+Four hooks run automatically on every Claude Code session:
 
 **`memento-activate.js`** (SessionStart):
 - Reads the journal for the current instance
@@ -35,6 +35,14 @@ Three hooks run automatically on every Claude Code session:
 - Fires before context compaction
 - Emits "MANDATORY WRITE — LAST WRITE OPPORTUNITY" to stdout
 - Always fires — gives Claude one final chance to capture current intent before the compaction window closes
+- Also writes `ctx_bridge.json` via `claude -p` AI extraction from the session transcript tail. Falls back to `journal.why` if AI extraction fails. Skips if a richer tracker bridge already exists.
+
+**`memento-sessionend.js`** (SessionEnd):
+- Fires when the Claude Code session ends (clean exit, crash, or interrupt)
+- Writes a minimal `ctx_bridge.json` from `journal.why` — covers sessions that exit without compacting
+- Does not spawn subprocesses (runs in milliseconds to avoid blocking session exit)
+- Skips if a richer bridge already exists from the tracker or PreCompact hook
+- No stdout output (session is ending; nothing to inject)
 
 **`memento-config.js`** (shared utilities):
 - Instance tag: `getInstanceTag()` → OS username → "default" (journal file path; override with `MEMENTO_INSTANCE_TAG`)
@@ -43,7 +51,19 @@ Three hooks run automatically on every Claude Code session:
 - `readJournal()` — symlink-safe, size-capped JSON read; returns null for any journal without a `why` field
 - `writeJournal()` — atomic temp+rename, symlink-safe, 0600 permissions; normalizes and caps `why` and `why_history`
 - `sanitizeLine()` — collapses newlines and excess whitespace in string fields
-- Constants: `MAX_WHY_CHARS` (200), `MAX_WHY_HISTORY` (10), `MAX_JOURNAL_BYTES`
+- Constants: `MAX_WHY_CHARS` (200), `MAX_WHY_HISTORY` (10), `MAX_JOURNAL_BYTES`, `BRIDGE_TRIGGER_PCT` (74), `CTX_DROP_THRESHOLD` (20)
+- Bridge utilities: `getCtxBridgePath`, `writeCtxBridge`, `readCtxBridge`, `deleteCtxBridge`
+- JSONL utilities: `findLatestJsonl`, `readLastUsage`, `getLastCtxPath`, `readLastCtxPct`, `writeLastCtxPct`
+
+### ctx_bridge
+
+In addition to the journal (`why` + history), memento writes a structured recovery snapshot at `~/.claude/.memento/ctx_bridge.json` before the session ends. Three hooks can write this file (only the first/richest write wins):
+
+1. **Tracker at 74%+**: Claude writes the bridge directly in response to the `[BRIDGE]` directive — richest content (Claude has full knowledge of files in progress, exact next step, current error).
+2. **PreCompact hook**: Uses `claude -p` AI extraction from the JSONL transcript tail — catches cases where the tracker directive was not actioned (e.g. compaction fired mid-turn between tracker checks).
+3. **SessionEnd hook**: Writes `{ next: journal.why, files: [] }` directly — minimal but reliable fallback for sessions that exit cleanly without compacting.
+
+At the next session start, `memento-activate.js` injects the bridge into the recovery prompt and deletes the file.
 
 ### Hook definition file
 
@@ -108,7 +128,7 @@ Since memento is a Claude Code plugin, full end-to-end testing requires Claude C
 2. **Journal utilities**: Write a small test script that calls functions from `memento-config.js` directly.
 3. **Integration**: Install hooks, open Claude Code, complete some tasks, trigger compaction manually (by filling context), and verify recovery.
 
-Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (58 tests total).
+Run the test suite with `bash tests/run.sh`. It covers journal utilities, hook integration, and symlink safety (119 tests total).
 
 ## Contribution Guidelines
 

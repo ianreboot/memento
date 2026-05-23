@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.5.4)
+// memento — SessionStart hook (v0.5.6)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -65,18 +65,21 @@ function run(rawInput) {
     fs.writeFileSync(turnPath, isRecovery ? '1' : '0', { mode: 0o600 });
   } catch (e) { /* silent */ }
 
+  // Always consume bridge if present — file existence is the signal, not source.
+  // Previous: only consumed on source=startup, leaving bridge stale on source=compact/resume.
+  const bridgePath = getCtxBridgePath(claudeDir);
+  const bridge     = readCtxBridge(bridgePath);
+  let bridgeStr = '';
+  if (bridge) {
+    bridgeStr = buildBridgeInjection(bridge) + '\n';
+    deleteCtxBridge(bridgePath);
+  }
+
   let output = '';
   if (isRecovery) {
-    output = buildRecoveryPrompt(journal, journalPath);
+    output = bridgeStr + buildRecoveryPrompt(journal, journalPath);
   } else {
-    // startup: inject bridge written by SessionEnd on previous exit
-    const bridgePath = getCtxBridgePath(claudeDir);
-    const bridge     = readCtxBridge(bridgePath);
-    if (bridge) {
-      output = buildBridgeInjection(bridge) + '\n';
-      deleteCtxBridge(bridgePath);
-    }
-    output += buildTurn1Prompt(journal, journalPath);
+    output = bridgeStr + buildTurn1Prompt(journal, journalPath);
   }
 
   if (output) process.stdout.write(output);
@@ -92,9 +95,6 @@ function buildBridgeInjection(bridge) {
 }
 
 // Variant 8: Recovery — post-compaction session start
-// Note: [CTX BRIDGE] injection moved to memento-tracker.js (v0.5.1).
-// The tracker detects compaction via ctx% drop and injects/deletes the bridge
-// on the first user message — covering both inline and true-restart compaction.
 function buildRecoveryPrompt(journal, journalPath) {
   const header = `[MEMENTO] Recovering | path: ${journalPath}`;
   const why    = journal && typeof journal.why === 'string' ? journal.why : null;

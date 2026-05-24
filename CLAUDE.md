@@ -79,7 +79,7 @@ Memento supports two installation paths — both install the same hooks:
 
 ## Journal Format
 
-State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>-<project-hash>.json`
+State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>-<conversation-hash>.json`
 
 ```json
 {
@@ -91,11 +91,13 @@ State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>-<project-hash>.json`
 }
 ```
 
-Turn sidecar: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>-<project-hash>.turn` — plain integer, reset each session by SessionStart hook.
+Session anchor: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.anchor` — stores active JSONL path; written by SessionStart, read by all subsequent hooks.
 
-ctx_bridge: `$CLAUDE_CONFIG_DIR/.memento/ctx_bridge-<project-hash>.json` — per-project recovery snapshot.
+Turn sidecar: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.turn` — plain integer, fixed per-instance path (no hash); reset each session by SessionStart hook.
 
-**Project hash**: 8-char SHA-1 of the git root path (falls back to cwd outside git repos). Override with `MEMENTO_PROJECT_HASH` env var. Isolates all files for parallel sessions in different project directories.
+ctx_bridge: `$CLAUDE_CONFIG_DIR/.memento/ctx_bridge-<conversation-hash>.json` — per-conversation recovery snapshot.
+
+**Conversation hash**: 8-char SHA-1 of the active JSONL file path (unique per conversation, isolates parallel sessions on the same project). Override with `MEMENTO_PROJECT_HASH` env var for testing or non-git contexts. Falls back to `getProjectHash()` (SHA-1 of git root) when no JSONL is found.
 
 **Schema validation**: `readJournal()` returns null for any journal without a `why` field (includes all pre-v0.4.0 journals). Null triggers a fresh-start prompt; Claude creates a new journal at the namespaced path.
 
@@ -125,7 +127,7 @@ This is not overhead that can be removed. It is architecturally load-bearing. Th
 | `why_history` max entries | 10 | — |
 | Journal file size cap | 6KB | `MEMENTO_MAX_FILE_KB` |
 | Instance tag override | (OS username) | `MEMENTO_INSTANCE_TAG` |
-| Project hash override | (SHA-1 of git root) | `MEMENTO_PROJECT_HASH` |
+| Conversation hash override | (SHA-1 of JSONL path) | `MEMENTO_PROJECT_HASH` |
 
 ## Testing
 

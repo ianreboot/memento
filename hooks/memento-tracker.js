@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.6.0)
+// memento — UserPromptSubmit hook (v0.7.0)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
 //
-// Turn 1  (sidecar = 0): full prompt with schema template
-// Turn N+ (sidecar > 0): compressed one-line prompt with previous why shown
+// Turn 1  (counter = 0): full prompt with schema template; writes session anchor
+//                        if SessionStart didn't (rare startup race)
+// Turn N+ (counter > 0): compressed one-line prompt with previous why shown
 //
 // The hook does NOT write journal entries. Claude writes those via the Write
 // tool as instructed by SKILL.md. This hook only emits prompts and manages
-// the turn counter sidecar.
+// the turn counter.
 //
 // Silent-fails on any filesystem error — must never block user prompts.
 
@@ -21,8 +22,9 @@ const {
   getProjectHash,
   getClaudeDir,
   getJournalPath,
-  getTurnSidecarPath,
-  getLastCtxPath,
+  getFixedTurnPath,
+  getFixedLastCtxPath,
+  resolveConversation,
   readLastCtxPct,
   writeLastCtxPct,
   readJournal,
@@ -53,16 +55,23 @@ process.stdin.on('end', () => {
 function run(rawInput) {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const projectHash = getProjectHash();
-  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
-  const turnPath    = getTurnSidecarPath(journalPath);
+
+  // Resolve conversation identity. At T1, this also writes the session anchor
+  // if SessionStart didn't (rare startup race). At T2+, reads existing anchor.
+  const { conversationHash, jsonlPath } = resolveConversation(claudeDir, instanceTag);
+  const effectiveHash = conversationHash || getProjectHash();
+  const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
+
+  // Fixed per-instance turn counter and last-ctx paths (no hash dependency)
+  const turnPath    = getFixedTurnPath(claudeDir, instanceTag);
+  const lastCtxPath = getFixedLastCtxPath(claudeDir, instanceTag);
 
   // Read current turn counter (0 = Turn 1, >0 = Turn N)
   let turn = 0;
   try {
     const stored = parseInt(fs.readFileSync(turnPath, 'utf8').trim(), 10);
     if (!isNaN(stored) && stored >= 0) turn = stored;
-  } catch (e) { /* missing sidecar — treat as turn 0 (Turn 1) */ }
+  } catch (e) { /* missing counter — treat as turn 0 (Turn 1) */ }
 
   // Increment and persist the turn counter
   const nextTurn = turn + 1;
@@ -72,11 +81,12 @@ function run(rawInput) {
   const why     = journal && typeof journal.why === 'string' ? journal.why : null;
   const when    = journal && journal.when ? journal.when : null;
 
-  // Compute context usage from the active session JSONL
-  const jsonlPath = findLatestJsonl(claudeDir);
+  // Compute context usage from JSONL. Use anchored path when available; fall back to
+  // scan when resolveConversation returned null jsonlPath (MEMENTO_PROJECT_HASH override).
+  const ctxJsonlPath = jsonlPath || findLatestJsonl(claudeDir);
   let usedPct = null, cacheWrite = 0;
-  if (jsonlPath) {
-    const usage = readLastUsage(jsonlPath);
+  if (ctxJsonlPath) {
+    const usage = readLastUsage(ctxJsonlPath);
     if (usage) {
       const total = (usage.input_tokens || 0) +
                     (usage.cache_read_input_tokens || 0) +
@@ -86,8 +96,7 @@ function run(rawInput) {
     }
   }
 
-  const bridgePath  = getCtxBridgePath(claudeDir, projectHash);
-  const lastCtxPath = getLastCtxPath(journalPath);
+  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
 
   // Drop detection: a significant ctx% drop means a compaction just occurred.
   // Primary: ctx% dropped ≥ CTX_DROP_THRESHOLD from last_ctx (normal per-turn tracking).

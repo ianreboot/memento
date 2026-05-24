@@ -10,6 +10,13 @@ const path   = require('path');
 const {
   getInstanceTag,
   getProjectHash,
+  getConversationHash,
+  getSessionAnchorPath,
+  readSessionAnchor,
+  writeSessionAnchor,
+  getFixedTurnPath,
+  getFixedLastCtxPath,
+  resolveConversation,
   getJournalPath,
   getTurnSidecarPath,
   getLastCtxPath,
@@ -598,16 +605,151 @@ test('two sessions with different project hashes have isolated ctx_bridge paths'
   assert.strictEqual(readCtxBridge(bridgeB), null, 'write to bridgeA must not affect bridgeB');
 });
 
-test('journal path format is {instanceTag}-{projectHash}.json', () => {
+test('journal path format is {instanceTag}-{hash}.json (conversation or project hash)', () => {
   const dir = tmpDir();
   const p = getJournalPath(dir, 'alice', 'a3f9c1b2');
   assert.ok(p.endsWith('alice-a3f9c1b2.json'), `expected path to end with alice-a3f9c1b2.json, got ${p}`);
 });
 
-test('ctx_bridge path format is ctx_bridge-{projectHash}.json', () => {
+test('ctx_bridge path format is ctx_bridge-{hash}.json', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'a3f9c1b2');
   assert.ok(p.endsWith('ctx_bridge-a3f9c1b2.json'), `expected path to end with ctx_bridge-a3f9c1b2.json, got ${p}`);
+});
+
+// ---------------------------------------------------------------------------
+// v0.7.0 — conversation identity (anchor, fixed paths, resolveConversation)
+// ---------------------------------------------------------------------------
+
+console.log('\ngetConversationHash');
+
+test('returns 8-char hex from JSONL path', () => {
+  const h = getConversationHash('/some/.claude/projects/abc/session.jsonl');
+  assert.ok(typeof h === 'string' && h.length === 8, 'must be 8-char string');
+  assert.ok(/^[0-9a-f]{8}$/.test(h), 'must be 8-char hex');
+});
+
+test('same path always produces same hash', () => {
+  const p = '/home/x/.claude/projects/abc/session.jsonl';
+  assert.strictEqual(getConversationHash(p), getConversationHash(p));
+});
+
+test('different paths produce different hashes', () => {
+  const h1 = getConversationHash('/a/session1.jsonl');
+  const h2 = getConversationHash('/a/session2.jsonl');
+  assert.notStrictEqual(h1, h2);
+});
+
+console.log('\ngetSessionAnchorPath');
+
+test('anchor path format is {instanceTag}.anchor', () => {
+  const dir = tmpDir();
+  const p = getSessionAnchorPath(dir, 'claude2');
+  assert.ok(p.endsWith('claude2.anchor'), `expected claude2.anchor, got ${p}`);
+});
+
+console.log('\nreadSessionAnchor / writeSessionAnchor');
+
+test('round-trip: write then read returns same JSONL path', () => {
+  const dir = tmpDir();
+  const anchorPath = getSessionAnchorPath(dir, 'testuser');
+  const jsonlPath  = '/home/x/.claude/projects/abc/session.jsonl';
+  writeSessionAnchor(anchorPath, jsonlPath);
+  assert.strictEqual(readSessionAnchor(anchorPath), jsonlPath);
+});
+
+test('readSessionAnchor returns null for missing file', () => {
+  const dir = tmpDir();
+  const anchorPath = path.join(dir, '.memento', 'testuser.anchor');
+  assert.strictEqual(readSessionAnchor(anchorPath), null);
+});
+
+test('readSessionAnchor returns null for non-.jsonl content', () => {
+  const dir = tmpDir();
+  const anchorPath = getSessionAnchorPath(dir, 'testuser');
+  fs.mkdirSync(path.dirname(anchorPath), { recursive: true });
+  fs.writeFileSync(anchorPath, 'not-a-jsonl-path');
+  assert.strictEqual(readSessionAnchor(anchorPath), null, 'non-.jsonl content must return null');
+});
+
+test('readSessionAnchor returns null for symlink (symlink safety)', () => {
+  const dir  = tmpDir();
+  const real = path.join(dir, 'real.anchor');
+  fs.writeFileSync(real, '/path/to/session.jsonl');
+  const anchorPath = path.join(dir, 'link.anchor');
+  try {
+    fs.symlinkSync(real, anchorPath);
+    assert.strictEqual(readSessionAnchor(anchorPath), null, 'symlink must return null');
+  } catch (e) {
+    if (e.code !== 'EPERM') throw e; // skip on systems that disallow symlinks
+  }
+});
+
+console.log('\ngetFixedTurnPath / getFixedLastCtxPath');
+
+test('fixed turn path format is {instanceTag}.turn (no hash)', () => {
+  const dir = tmpDir();
+  const p = getFixedTurnPath(dir, 'claude2');
+  assert.ok(p.endsWith('claude2.turn'), `expected claude2.turn, got ${p}`);
+  const base = path.basename(p);
+  assert.ok(!base.includes('-'), `basename must not contain a hash segment, got ${base}`);
+});
+
+test('fixed last_ctx path format is {instanceTag}.last_ctx (no hash)', () => {
+  const dir = tmpDir();
+  const p = getFixedLastCtxPath(dir, 'claude2');
+  assert.ok(p.endsWith('claude2.last_ctx'), `expected claude2.last_ctx, got ${p}`);
+});
+
+console.log('\nresolveConversation');
+
+test('MEMENTO_PROJECT_HASH override bypasses JSONL scan', () => {
+  const dir = tmpDir();
+  process.env.MEMENTO_PROJECT_HASH = 'override1';
+  const { conversationHash, jsonlPath } = resolveConversation(dir, 'testuser');
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+  assert.strictEqual(conversationHash, 'override1');
+  assert.strictEqual(jsonlPath, null);
+});
+
+test('returns null conversationHash when no JSONL and no override', () => {
+  const dir = tmpDir();
+  delete process.env.MEMENTO_PROJECT_HASH;
+  const { conversationHash } = resolveConversation(dir, 'testuser');
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+  assert.strictEqual(conversationHash, null);
+});
+
+test('writes anchor and returns hash when JSONL exists', () => {
+  const dir = tmpDir();
+  delete process.env.MEMENTO_PROJECT_HASH;
+  // Create a fake JSONL so findLatestJsonl finds it
+  const projectDir = path.join(dir, 'projects', 'fakehash');
+  fs.mkdirSync(projectDir, { recursive: true });
+  const jsonlPath = path.join(projectDir, 'session.jsonl');
+  fs.writeFileSync(jsonlPath, '{"type":"assistant"}\n');
+  const { conversationHash } = resolveConversation(dir, 'testuser');
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+  assert.ok(conversationHash !== null, 'must resolve hash from JSONL');
+  assert.ok(/^[0-9a-f]{8}$/.test(conversationHash), 'hash must be 8-char hex');
+  // Anchor must be written
+  const anchorPath = getSessionAnchorPath(dir, 'testuser');
+  assert.strictEqual(readSessionAnchor(anchorPath), jsonlPath, 'anchor must point to JSONL');
+});
+
+test('subsequent call reads anchor (no re-scan)', () => {
+  const dir = tmpDir();
+  delete process.env.MEMENTO_PROJECT_HASH;
+  const projectDir = path.join(dir, 'projects', 'fakehash');
+  fs.mkdirSync(projectDir, { recursive: true });
+  const jsonlPath = path.join(projectDir, 'session.jsonl');
+  fs.writeFileSync(jsonlPath, '{"type":"assistant"}\n');
+  // First call writes anchor
+  const { conversationHash: h1 } = resolveConversation(dir, 'testuser');
+  // Second call reads anchor (same hash)
+  const { conversationHash: h2 } = resolveConversation(dir, 'testuser');
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+  assert.strictEqual(h1, h2, 'both calls must return same hash');
 });
 
 // ---------------------------------------------------------------------------

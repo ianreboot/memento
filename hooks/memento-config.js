@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// memento — shared configuration and journal utilities (v0.6.0)
+// memento — shared configuration and journal utilities (v0.7.0)
 //
 // Handles:
 //   - Instance tag derivation (which journal file to use; one file per OS user)
-//   - Journal file path resolution
+//   - Journal file path resolution (conversation-scoped via JSONL anchor)
 //   - Safe atomic reads and writes (symlink-safe, size-capped)
 //   - Turn counter sidecar path (for T1 vs T2+ discrimination)
 //
@@ -391,6 +391,105 @@ function getCtxBridgePath(claudeDir, projectHash) {
   return path.join(dir, `ctx_bridge-${projectHash}.json`);
 }
 
+// ---------------------------------------------------------------------------
+// Session anchor + conversation identity (v0.7.0)
+// ---------------------------------------------------------------------------
+
+// Returns the path to the per-instance session anchor file.
+// The anchor stores the active JSONL path so all hooks in the same session
+// resolve the same conversationHash without repeated filesystem scans.
+function getSessionAnchorPath(claudeDir, instanceTag) {
+  const dir = path.join(claudeDir, '.memento');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  return path.join(dir, `${instanceTag}.anchor`);
+}
+
+// Read the session anchor → active JSONL file path, or null if missing/invalid.
+function readSessionAnchor(anchorPath) {
+  try {
+    const st = fs.lstatSync(anchorPath);
+    if (st.isSymbolicLink() || !st.isFile()) return null;
+    const val = fs.readFileSync(anchorPath, 'utf8').trim();
+    return (val && val.endsWith('.jsonl')) ? val : null;
+  } catch (e) { return null; }
+}
+
+// Write session anchor atomically (plain JSONL path as file content).
+function writeSessionAnchor(anchorPath, jsonlPath) {
+  let tempPath;
+  try {
+    const dir = path.dirname(anchorPath);
+    tempPath = path.join(dir, `.anchor.${process.pid}.${Date.now()}.tmp`);
+    const O_NOFOLLOW = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW;
+    let fd;
+    try {
+      fd = fs.openSync(tempPath, flags, 0o600);
+      fs.writeSync(fd, jsonlPath);
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch (e) {}
+    }
+    fs.renameSync(tempPath, anchorPath);
+  } catch (e) {
+    if (tempPath) { try { fs.unlinkSync(tempPath); } catch (_) {} }
+    if (DEBUG) process.stderr.write(`[memento] writeSessionAnchor error: ${e.message}\n`);
+  }
+}
+
+// Derive an 8-char hex hash from the JSONL file path.
+// Stable for the entire conversation — the JSONL file grows but never renames.
+function getConversationHash(jsonlPath) {
+  return crypto.createHash('sha1').update(jsonlPath).digest('hex').slice(0, 8);
+}
+
+// Fixed per-instance turn counter path — no project or conversation hash dependency.
+// One file per OS user, reset by SessionStart each new session.
+function getFixedTurnPath(claudeDir, instanceTag) {
+  const dir = path.join(claudeDir, '.memento');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  return path.join(dir, `${instanceTag}.turn`);
+}
+
+// Fixed per-instance last-ctx-pct path — no project or conversation hash dependency.
+function getFixedLastCtxPath(claudeDir, instanceTag) {
+  const dir = path.join(claudeDir, '.memento');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  return path.join(dir, `${instanceTag}.last_ctx`);
+}
+
+// Resolve the active conversation identity for this session.
+//
+// Resolution order:
+//   1. MEMENTO_PROJECT_HASH env var — explicit override (test isolation + non-git contexts)
+//   2. Session anchor file (written by SessionStart or a prior T1 resolution)
+//   3. findLatestJsonl() — fresh scan (T1 case or rare SessionStart startup race)
+//
+// Side effect: writes session anchor if resolving via fresh scan.
+// Returns { conversationHash, jsonlPath } — either may be null if no JSONL found.
+function resolveConversation(claudeDir, instanceTag) {
+  // Test/override path: skip JSONL scan entirely
+  const envHash = (process.env.MEMENTO_PROJECT_HASH || '').trim();
+  if (envHash) return { conversationHash: envHash, jsonlPath: null };
+
+  const anchorPath = getSessionAnchorPath(claudeDir, instanceTag);
+
+  // Fast path: anchor already written by SessionStart or a prior turn
+  let jsonlPath = readSessionAnchor(anchorPath);
+
+  if (!jsonlPath) {
+    // Anchor missing — scan for JSONL (T1 or SessionStart startup race)
+    jsonlPath = findLatestJsonl(claudeDir);
+    if (jsonlPath) writeSessionAnchor(anchorPath, jsonlPath);
+  }
+
+  if (!jsonlPath) return { conversationHash: null, jsonlPath: null };
+  return { conversationHash: getConversationHash(jsonlPath), jsonlPath };
+}
+
+// ---------------------------------------------------------------------------
+// JSONL discovery
+// ---------------------------------------------------------------------------
+
 // Walk ~/.claude/projects/ one level deep (hash dirs), find the most recently
 // modified .jsonl file. Prefers files modified within the last 5 minutes to
 // avoid picking up a sibling docker's JSONL on multi-instance systems.
@@ -576,10 +675,17 @@ module.exports = {
   getInstanceTag,
   getProjectTag,
   getProjectHash,
+  getConversationHash,
+  getSessionAnchorPath,
+  readSessionAnchor,
+  writeSessionAnchor,
+  getFixedTurnPath,
+  getFixedLastCtxPath,
+  resolveConversation,
   getClaudeDir,
   getJournalPath,
-  getTurnSidecarPath,
-  getLastCtxPath,
+  getTurnSidecarPath,    // kept for backward compat (tests)
+  getLastCtxPath,        // kept for backward compat (tests)
   readLastCtxPct,
   writeLastCtxPct,
   sanitizeLine,

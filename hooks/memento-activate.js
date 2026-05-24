@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.6.0)
+// memento — SessionStart hook (v0.7.0)
 //
 // Runs once per session start (including after compaction and on resume).
 //
 // Two responsibilities:
-//   1. Reset the turn counter sidecar so UserPromptSubmit can distinguish
-//      Turn 1 (full prompt) from Turn N (compressed prompt).
+//   1. Resolve conversation identity via JSONL anchor (write/update anchor).
+//      Reset fixed per-instance turn counter — no conversation hash needed.
 //   2. Emit a MANDATORY WRITE prompt appropriate for the session source:
 //        compact / resume → Recovery prompt (Variant 8)
 //        startup / unknown → Turn 1 prompt (Variant 1/2/3)
 //
-// For recovery sessions the sidecar is reset to 1 (not 0) so the first
+// For recovery sessions the turn counter is reset to 1 (not 0) so the first
 // UserPromptSubmit emits a compressed Turn 2 prompt rather than the full
 // Turn 1 prompt again — the Recovery prompt already covered that.
 //
@@ -24,7 +24,8 @@ const {
   getProjectHash,
   getClaudeDir,
   getJournalPath,
-  getTurnSidecarPath,
+  getFixedTurnPath,
+  resolveConversation,
   readJournal,
   getCtxBridgePath,
   readCtxBridge,
@@ -53,24 +54,27 @@ function run(rawInput) {
 
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const projectHash = getProjectHash();
-  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
-  const turnPath    = getTurnSidecarPath(journalPath);
+  const isRecovery  = (source === 'compact' || source === 'resume');
 
-  const isRecovery = (source === 'compact' || source === 'resume');
-  const journal    = readJournal(journalPath);
+  // Resolve conversation identity — write/update anchor for this session.
+  // JSONL is almost always present at SessionStart. Rare startup race handled
+  // in tracker.js (T1): anchor is written there if still missing.
+  const { conversationHash } = resolveConversation(claudeDir, instanceTag);
+  const effectiveHash = conversationHash || getProjectHash();
 
-  // Reset turn counter.
-  // Recovery: start at 1 so the next UserPromptSubmit emits compressed Turn 2
-  // (the Recovery prompt already served as the full Turn 1 prompt).
-  // Fresh start: reset to 0 so the next UserPromptSubmit emits full Turn 1.
+  const journalPath = getJournalPath(claudeDir, instanceTag, effectiveHash);
+  const journal     = readJournal(journalPath);
+
+  // Reset fixed per-instance turn counter (no conversation hash needed).
+  // Recovery: start at 1 so next UserPromptSubmit emits compressed Turn 2.
+  // Fresh start: reset to 0 so next UserPromptSubmit emits full Turn 1.
+  const turnPath = getFixedTurnPath(claudeDir, instanceTag);
   try {
     fs.writeFileSync(turnPath, isRecovery ? '1' : '0', { mode: 0o600 });
   } catch (e) { /* silent */ }
 
   // Always consume bridge if present — file existence is the signal, not source.
-  // Previous: only consumed on source=startup, leaving bridge stale on source=compact/resume.
-  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
+  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
   const bridge     = readCtxBridge(bridgePath);
   let bridgeStr = '';
   if (bridge) {

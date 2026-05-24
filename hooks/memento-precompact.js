@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.6.0)
+// memento — PreCompact hook (v0.7.0)
 //
 // Runs before context compaction. Does two things:
 //
@@ -25,6 +25,7 @@ const {
   getInstanceTag,
   getProjectHash,
   getJournalPath,
+  resolveConversation,
   readJournal,
   getCtxBridgePath,
   findLatestJsonl,
@@ -51,12 +52,16 @@ process.stdin.on('end', () => {
 function main() {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const projectHash = getProjectHash();
-  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
-  const journal     = readJournal(journalPath);
 
-  // Read current ctx% for pct field in bridge
-  const jsonlPath = findLatestJsonl(claudeDir);
+  // Resolve conversation identity from anchor (written at session start/T1)
+  const { conversationHash, jsonlPath: anchoredJsonl } = resolveConversation(claudeDir, instanceTag);
+  const effectiveHash = conversationHash || getProjectHash();
+  const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
+  const journal       = readJournal(journalPath);
+
+  // Read current ctx% for pct field in bridge.
+  // Use anchored JSONL if available; fall back to fresh scan for precompact edge case.
+  const jsonlPath = anchoredJsonl || findLatestJsonl(claudeDir);
   let usedPct = null;
   if (jsonlPath) {
     const usage = readLastUsage(jsonlPath);
@@ -74,7 +79,7 @@ function main() {
   // Write ctx_bridge.json if not already written by tracker.
   // Tracker's bridge is richer (Claude knew which files it was editing).
   // Here we only write if no bridge exists yet.
-  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
+  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
   if (!readCtxBridge(bridgePath)) {
     const transcriptPath = resolveTranscript(rawInput, claudeDir);
     const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, usedPct);

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Integration tests for memento hook scripts (v0.4.0)
+// Integration tests for memento hook scripts (v0.7.0)
 // Runs hooks as subprocesses with isolated CLAUDE_CONFIG_DIR to avoid touching real journals.
 'use strict';
 
@@ -76,16 +76,16 @@ function writeOldSchemaJournal(dir) {
   return journalPath;
 }
 
-// Write the turn sidecar file
+// Write the turn counter file (v0.7.0: fixed per-instance path, no hash)
 function writeTurnSidecar(dir, value) {
-  const sidecarPath = path.join(dir, '.memento', 'testuser-testhash.turn');
+  const sidecarPath = path.join(dir, '.memento', 'testuser.turn');
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
   fs.writeFileSync(sidecarPath, String(value));
 }
 
-// Read the turn sidecar file
+// Read the turn counter file (v0.7.0: fixed per-instance path, no hash)
 function readTurnSidecar(dir) {
-  const sidecarPath = path.join(dir, '.memento', 'testuser-testhash.turn');
+  const sidecarPath = path.join(dir, '.memento', 'testuser.turn');
   try { return parseInt(fs.readFileSync(sidecarPath, 'utf8').trim(), 10); } catch (e) { return null; }
 }
 
@@ -543,15 +543,15 @@ test('spike guard skips if bridge file already exists', () => {
 
 console.log('\nmemento-tracker.js (drop detection)');
 
-// Write last_ctx sidecar (persisted ctx% from previous turn)
+// Write last_ctx file (v0.7.0: fixed per-instance path, no hash)
 function writeLastCtxFile(dir, pct) {
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
-  fs.writeFileSync(path.join(mementoDir, 'testuser-testhash.last_ctx'), String(pct));
+  fs.writeFileSync(path.join(mementoDir, 'testuser.last_ctx'), String(pct));
 }
 
 function readLastCtxFile(dir) {
-  const p = path.join(dir, '.memento', 'testuser-testhash.last_ctx');
+  const p = path.join(dir, '.memento', 'testuser.last_ctx');
   try { return parseFloat(fs.readFileSync(p, 'utf8').trim()); } catch (e) { return null; }
 }
 

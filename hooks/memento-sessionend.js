@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionEnd hook (v0.6.0)
+// memento — SessionEnd hook (v0.7.0)
 //
 // Runs when Claude Code session ends (clean exit, crash, or interrupt).
 // Writes a minimal ctx_bridge.json from journal.why so that on restart,
@@ -22,6 +22,7 @@ const {
   getInstanceTag,
   getProjectHash,
   getJournalPath,
+  resolveConversation,
   readJournal,
   getCtxBridgePath,
   findLatestJsonl,
@@ -46,12 +47,15 @@ process.stdin.on('end', () => {
 function main() {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const projectHash = getProjectHash();
-  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
-  const journal     = readJournal(journalPath);
+
+  // Resolve conversation identity from anchor
+  const { conversationHash, jsonlPath: anchoredJsonl } = resolveConversation(claudeDir, instanceTag);
+  const effectiveHash = conversationHash || getProjectHash();
+  const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
+  const journal       = readJournal(journalPath);
 
   // Read current ctx% for pct field in bridge
-  const jsonlPath = findLatestJsonl(claudeDir);
+  const jsonlPath = anchoredJsonl || findLatestJsonl(claudeDir);
   let usedPct = null;
   if (jsonlPath) {
     const usage = readLastUsage(jsonlPath);
@@ -67,7 +71,7 @@ function main() {
 
   // Write minimal bridge only if none exists. Existing bridge (tracker at ≥74%
   // or PreCompact) is richer — preserve it.
-  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
+  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
   if (!readCtxBridge(bridgePath) && why) {
     writeCtxBridge(bridgePath, {
       files: [],

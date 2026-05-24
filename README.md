@@ -80,7 +80,7 @@ Compaction happens / next session starts
 
 ## Context Bridge
 
-When context usage reaches 74%, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{projectHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
+When context usage reaches 74%, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{conversationHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
 
 ```json
 {
@@ -204,7 +204,7 @@ Memento fills the gap between three existing layers:
 
 ## Privacy and Data
 
-**What is stored:** Current intent and intent history. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>-<projectHash>.json`. Each project gets its own file — two Claude Code windows in different project directories never share a journal.
+**What is stored:** Current intent and intent history. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>-<conversationHash>.json`. Each conversation gets its own file — two Claude Code windows in the same project directory never share a journal.
 
 **What is not stored:** File contents, full command output, credentials, secrets, task results, or any data you have not asked to track. The UserPromptSubmit hook reads the turn counter and journal — it does not parse your message content.
 
@@ -217,8 +217,10 @@ Ask Claude: "what does memento have on this session?"
 
 **To clear a journal manually:**
 ```bash
-rm ~/.claude/.memento/<username>-<projectHash>.json
+rm ~/.claude/.memento/<username>-<conversationHash>.json
 ```
+
+The conversation hash is the 8-char hex shown in the `path:` field of every memento prompt. To find it: look at the last `[MEMENTO] MANDATORY WRITE | Turn N | path: ...` line injected at session start, or ask Claude: `"what is your memento journal path?"`
 
 **To see all journals:**
 ```bash
@@ -230,7 +232,7 @@ ls ~/.claude/.memento/
 Direct JSON edits are supported and intentional — they are the escape hatch when Claude writes something wrong and you want to fix it without waiting for Claude to correct itself.
 
 ```bash
-nano ~/.claude/.memento/<username>-<projectHash>.json
+nano ~/.claude/.memento/<username>-<conversationHash>.json
 ```
 
 Keep it valid JSON and avoid newlines inside string values. The hook re-reads the file on every session start and every user prompt, so changes take effect immediately — no restart needed.
@@ -242,7 +244,7 @@ All settings are optional. Memento works out of the box with no configuration.
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
 | `MEMENTO_INSTANCE_TAG` | OS username | Override instance tag portion of journal filename — use when multiple users share a machine account |
-| `MEMENTO_PROJECT_HASH` | SHA-1 of git root | Override project hash for testing or non-git contexts. 8-char hex string. |
+| `MEMENTO_PROJECT_HASH` | SHA-1 of active JSONL path | Override conversation hash for testing or non-git contexts. 8-char hex string. When set, `resolveConversation()` returns it directly without scanning for a JSONL file. |
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
 | `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>-<hash>.debug.json` |
 | `MEMENTO_CONTEXT_WINDOW_TOKENS` | `200000` | Override context window size for the 74% bridge threshold — use if your model has a different context window |
@@ -251,6 +253,21 @@ All settings are optional. Memento works out of the box with no configuration.
 Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window.
 
 **Shared accounts**: If multiple users or Claude windows share the same OS user account, set a unique `MEMENTO_INSTANCE_TAG` per instance (e.g. `MEMENTO_INSTANCE_TAG=alice` and `MEMENTO_INSTANCE_TAG=bob`).
+
+## Upgrading from v0.6.x to v0.7.0
+
+**Breaking change**: journal files are now namespaced per conversation (SHA-1 of JSONL path) rather than per project (SHA-1 of git root). v0.6.x files will not be found on upgrade.
+
+After upgrading, the first session in each project produces a "No prior journal" Turn 1 prompt — the same as first-install behavior. Claude creates a fresh journal at the new conversationHash path. Existing intent history from v0.6.x is not migrated.
+
+**Clean up old files**: v0.6.x files (`{instanceTag}-{projectHash}.json` and associated `.turn`/`.last_ctx` sidecars) remain in `~/.claude/.memento/` as inert files. Safe to delete after confirming the new session is journaling correctly. New files follow: `{instanceTag}-{8charHex}.json` where the hash derives from the JSONL path, not the git root.
+
+**What you get**: parallel Claude Code sessions in the same project directory now have fully isolated state — no configuration required. Previously, two Claude windows in the same repo shared a journal and could overwrite each other.
+
+**New files** (per-instance, no hash):
+- `{instanceTag}.anchor` — stores the active JSONL path; written once at session start
+- `{instanceTag}.turn` — turn counter (was `{instanceTag}-{projectHash}.turn`)
+- `{instanceTag}.last_ctx` — ctx% from previous turn (was `{instanceTag}-{projectHash}.last_ctx`)
 
 ## Upgrading from v0.5.x to v0.6.0
 

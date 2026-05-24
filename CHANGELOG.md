@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.7.0 — 2026-05-24
+
+**Breaking change**: journal and ctx_bridge files are now namespaced per conversation (SHA-1 of JSONL path) rather than per project (SHA-1 of git root). v0.6.x files will not be found on upgrade. Claude creates a fresh journal on first run (identical to first-install behavior).
+
+- **Fix**: parallel-session collision on the same project. Two Claude Code windows in the same repo shared an identical `{tag}-{projectHash}.json` journal path and overwrote each other. v0.7.0 replaces projectHash with conversationHash derived from the JSONL file path — each conversation is unique, so all files are isolated automatically.
+- **New**: `resolveConversation(claudeDir, instanceTag)` — single resolution function called by all hooks. Reads the session anchor (fast path) or scans for the latest JSONL (T1/startup race). Returns `{ conversationHash, jsonlPath }`.
+- **New**: `getConversationHash(jsonlPath)` — 8-char SHA-1 of the JSONL path.
+- **New**: session anchor file (`{tag}.anchor`) — written by SessionStart, read by all subsequent hooks in the same session. Eliminates repeated JSONL scans on T2+.
+- **Changed**: turn counter and last-ctx sidecar moved to fixed per-instance paths (no hash):
+  - `{tag}.turn` (was `{tag}-{projectHash}.turn`)
+  - `{tag}.last_ctx` (was `{tag}-{projectHash}.last_ctx`)
+- **Fix**: `memento-write-why.js` updated to use `resolveConversation()`. Previously used `getProjectHash()` — the v0.6.0 pattern — causing Claude's journal writes to land at the project-hash path while hooks read from the conversation-hash path. Writes now go to the correct journal.
+- **File format changes**:
+  - Journal: `~/.claude/.memento/{tag}-{conversationHash}.json` (was `{tag}-{projectHash}.json`)
+  - ctx_bridge: `~/.claude/.memento/ctx_bridge-{conversationHash}.json` (was `ctx_bridge-{projectHash}.json`)
+  - Turn sidecar: `~/.claude/.memento/{tag}.turn` (was `{tag}-{projectHash}.turn`)
+  - Last-ctx sidecar: `~/.claude/.memento/{tag}.last_ctx` (was `{tag}-{projectHash}.last_ctx`)
+  - Session anchor (new): `~/.claude/.memento/{tag}.anchor`
+- **Fallback**: when no JSONL is found (rare startup race), `getProjectHash()` (SHA-1 of git root) is used as the effective hash — same behavior as v0.6.0. Once a JSONL is found, the anchor is written and all hooks converge on the same conversationHash.
+- **Test isolation**: `MEMENTO_PROJECT_HASH` env var still bypasses JSONL scan and is returned directly as the conversationHash. All 148 tests pass unchanged.
+- **CLAUDE.md**: Journal Format section updated to document conversation-hash paths, session anchor, and fixed sidecar paths.
+- **README**: Privacy, Context Bridge, Configuration, and Upgrade sections updated.
+
 ## v0.6.0 — 2026-05-24
 
 **Breaking change**: journal and ctx_bridge files are now namespaced per project. Files from v0.5.x will not be found on upgrade. Claude creates a fresh journal on first run in each project (identical to first-install behavior). Existing intent history is not migrated. See the Upgrade section in README for details.

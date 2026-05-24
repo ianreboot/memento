@@ -23,16 +23,16 @@ Remove the `MEMENTO_DEBUG` line from your settings and restart Claude Code. The 
 ## Debug journal location
 
 ```
-~/.claude/.memento/<instance-tag>.debug.json
+~/.claude/.memento/<instance-tag>-<project-hash>.debug.json
 ```
 
-For example, if your OS username is `alice`, the debug journal is at:
+For example, if your OS username is `alice` and the project hash is `a3f9c1b2`, the debug journal is at:
 
 ```
-~/.claude/.memento/alice.debug.json
+~/.claude/.memento/alice-a3f9c1b2.debug.json
 ```
 
-The main journal (`alice.json`) is completely unaffected by debug mode.
+The main journal (`alice-a3f9c1b2.json`) is completely unaffected by debug mode.
 
 ## Schema reference
 
@@ -175,5 +175,5 @@ The debug journal is capped at 2MB. Unlike the main journal, entries are never p
 When debug mode is disabled, the file is deleted automatically at the next session start. If you want to preserve it for analysis, copy it before disabling debug mode:
 
 ```bash
-cp ~/.claude/.memento/alice.debug.json ~/memento-debug-$(date +%Y%m%d).json
+cp ~/.claude/.memento/alice-a3f9c1b2.debug.json ~/memento-debug-$(date +%Y%m%d).json
 ```

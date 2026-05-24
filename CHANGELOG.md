@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.0 — 2026-05-24
+
+**Breaking change**: journal and ctx_bridge files are now namespaced per project. Files from v0.5.x will not be found on upgrade. Claude creates a fresh journal on first run in each project (identical to first-install behavior). Existing intent history is not migrated. See the Upgrade section in README for details.
+
+- **Fix**: per-project file namespacing eliminates parallel session state collisions. Developers who run two Claude Code windows in different project directories now get fully isolated journal, bridge, and sidecar files — no configuration required. Reported by community audit of multi-project usage patterns.
+- **New**: `getProjectHash()` — derives an 8-char SHA-1 of the git root path (falls back to `process.cwd()` outside git repos). Override with `MEMENTO_PROJECT_HASH` env var for testing or non-git contexts.
+- **File format change**:
+  - Journal: `~/.claude/.memento/{instanceTag}-{projectHash}.json`
+    (was: `~/.claude/.memento/{instanceTag}.json`)
+  - ctx_bridge: `~/.claude/.memento/ctx_bridge-{projectHash}.json`
+    (was: `~/.claude/.memento/ctx_bridge.json`)
+  - Turn sidecar, last-ctx sidecar, and debug journal are derived from the journal path and update automatically.
+- **Docs**: Added architecture explanation for why the PreCompact hook uses a `claude -p` inference call. This is load-bearing — the hook system is one-way and there is no other mechanism for AI extraction at compaction time.
+- **Tests**: all path fixtures updated; `MEMENTO_PROJECT_HASH` env override added for deterministic test paths; 7 new tests added (getProjectHash, parallel-session isolation, path format assertions).
+- **Plugin manifests**: `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` bumped to 0.6.0.
+
 ## v0.5.6 — 2026-05-23
 
 Bridge consumption is now source-agnostic: `memento-activate.js` injects and deletes

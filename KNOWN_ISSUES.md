@@ -2,13 +2,11 @@
 
 Issues that cannot be fully resolved in code due to architectural constraints or platform limitations.
 
-## 1. Concurrent Claude instances (last-writer-wins)
+## 1. ~~Concurrent Claude instances (last-writer-wins)~~ — **Fixed in v0.6.0**
 
-When two Claude Code windows work on the same project simultaneously, journal writes use last-writer-wins. The atomic rename protects against corruption but not against lost entries. The instance whose Write tool call lands second overwrites the first's entry.
+Per-project namespacing isolates each project's journal, ctx_bridge, and sidecar files by an 8-char hash of the git root path. Two Claude Code sessions running simultaneously in different project directories now have fully isolated state — no configuration required.
 
-**Impact**: Occasional lost task entries during multi-session use.
-
-**Workaround**: Set `MEMENTO_INSTANCE_TAG` to different values per instance so each gets its own journal file.
+Within the same project directory, the atomic rename still protects against corruption but two sessions writing simultaneously remains last-writer-wins (the `MEMENTO_INSTANCE_TAG` workaround no longer applies since both sessions share the same project hash; use different user accounts or containers for full isolation within a single project).
 
 ## 2. ~~Claude's Write tool bypasses atomic write protections~~ — **Fixed in v0.5.6**
 
@@ -32,7 +30,17 @@ On Windows, `O_NOFOLLOW` is not available (falls back to 0). The TOCTOU window b
 
 If you used memento before v0.1.0, you may have journal files from an earlier naming scheme (named after git repos rather than your OS username). These are inert — hooks will not read or write them — but they sit in `~/.claude/.memento/` taking up space.
 
-**Cleanup**: Review files in `~/.claude/.memento/` and delete any that don't match your OS username.
+**Cleanup**: Review files in `~/.claude/.memento/` and delete any that don't match the `{instanceTag}-{projectHash}.json` pattern.
+
+**v0.6.0 upgrade**: Files written by v0.5.x (named `{instanceTag}.json` and `ctx_bridge.json`) remain in `~/.claude/.memento/` as inert files after upgrading. They are safe to delete. New files follow the `{instanceTag}-{projectHash}.json` pattern.
+
+## 8. v0.6.0 upgrade: journal history is not migrated
+
+After upgrading from v0.5.x to v0.6.0, the first session in each project produces a "No prior journal" Turn 1 prompt — identical to first-install behavior. Existing intent history (`why`, `why_history`) from v0.5.x journal files is not migrated to the new namespaced paths.
+
+**Impact**: One session of missing prior context per project after upgrade. Not a recurring issue.
+
+**Delete when**: 2026-07-01 (one month after v0.6.0 release, users have had time to upgrade).
 
 ## 6. Context bridge coverage across fast-growing sessions
 

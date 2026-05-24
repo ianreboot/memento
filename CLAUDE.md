@@ -79,7 +79,7 @@ Memento supports two installation paths — both install the same hooks:
 
 ## Journal Format
 
-State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.json`
+State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>-<project-hash>.json`
 
 ```json
 {
@@ -91,9 +91,21 @@ State file: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.json`
 }
 ```
 
-Turn sidecar: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.turn` — plain integer, reset each session by SessionStart hook.
+Turn sidecar: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>-<project-hash>.turn` — plain integer, reset each session by SessionStart hook.
 
-**Schema validation**: `readJournal()` returns null for any journal without a `why` field (includes all pre-v0.4.0 journals). Null triggers a fresh-start prompt; Claude creates a new v0.4.0 journal.
+ctx_bridge: `$CLAUDE_CONFIG_DIR/.memento/ctx_bridge-<project-hash>.json` — per-project recovery snapshot.
+
+**Project hash**: 8-char SHA-1 of the git root path (falls back to cwd outside git repos). Override with `MEMENTO_PROJECT_HASH` env var. Isolates all files for parallel sessions in different project directories.
+
+**Schema validation**: `readJournal()` returns null for any journal without a `why` field (includes all pre-v0.4.0 journals). Null triggers a fresh-start prompt; Claude creates a new journal at the namespaced path.
+
+## Architecture Note: Why the PreCompact Hook Uses a `claude -p` Inference Call
+
+The PreCompact hook is a shell process. Claude Code calls it before compaction, reads its stdout as a prompt injection, then proceeds with compaction. The hook runs and exits — it cannot wait for Claude to respond, and Claude may not be able to use tool calls during compaction ("tool use may not be available during compaction" is documented in the hook source).
+
+The only way to write `ctx_bridge.json` with rich structured data (files, next step, error) at the PreCompact boundary — when no tracker bridge exists — is to spawn a separate `claude -p` process that reads the session transcript tail and extracts recovery state. Without this call, the only fallback is the minimal bridge from `journal.why` (no files, no structured next step), which is the same low-fidelity bridge SessionEnd writes.
+
+This is not overhead that can be removed. It is architecturally load-bearing. The hook system is one-way: hooks write to stdout (prompt injection) and exit. There is no mechanism for a hook to wait for Claude to respond or write files. `claude -p` is the only way to perform AI extraction at compaction time.
 
 ## Design Principles
 
@@ -113,6 +125,7 @@ Turn sidecar: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.turn` — plain intege
 | `why_history` max entries | 10 | — |
 | Journal file size cap | 6KB | `MEMENTO_MAX_FILE_KB` |
 | Instance tag override | (OS username) | `MEMENTO_INSTANCE_TAG` |
+| Project hash override | (SHA-1 of git root) | `MEMENTO_PROJECT_HASH` |
 
 ## Testing
 

@@ -58,18 +58,19 @@ Four hooks run automatically on every Claude Code session:
 **`memento-config.js`** (shared utilities):
 - Instance tag: `getInstanceTag()` → OS username → "default" (journal file path; override with `MEMENTO_INSTANCE_TAG`)
 - Project tag: `getProjectTag()` → git root basename → cwd basename → "default" (informational only; common names blocklisted)
+- Project hash: `getProjectHash()` → 8-char SHA-1 of git root path → SHA-1 of cwd → "default" (namespaces all per-project files; override with `MEMENTO_PROJECT_HASH`)
 - Turn sidecar path: `getTurnSidecarPath(journalPath)` → replaces `.json` with `.turn`
 - `readJournal()` — symlink-safe, size-capped JSON read; returns null for any journal without a `why` field
 - `writeJournal()` — atomic temp+rename, symlink-safe, 0600 permissions; normalizes and caps `why` and `why_history`
 - `sanitizeLine()` — collapses newlines and excess whitespace in string fields
 - `WRITE_SCRIPT_PATH` — absolute path to `memento-write-why.js` (hooks embed this in MANDATORY WRITE prompts)
 - Constants: `MAX_WHY_CHARS` (200), `MAX_WHY_HISTORY` (10), `MAX_JOURNAL_BYTES`, `BRIDGE_TRIGGER_PCT` (74), `CTX_DROP_THRESHOLD` (20)
-- Bridge utilities: `getCtxBridgePath`, `writeCtxBridge`, `readCtxBridge`, `deleteCtxBridge`
+- Bridge utilities: `getCtxBridgePath(claudeDir, projectHash)`, `writeCtxBridge`, `readCtxBridge`, `deleteCtxBridge`
 - JSONL utilities: `findLatestJsonl`, `readLastUsage`, `getLastCtxPath`, `readLastCtxPct`, `writeLastCtxPct`
 
 ### ctx_bridge
 
-In addition to the journal (`why` + history), memento writes a structured recovery snapshot at `~/.claude/.memento/ctx_bridge.json` before the session ends. Three hooks can write this file (only the first/richest write wins):
+In addition to the journal (`why` + history), memento writes a structured recovery snapshot at `~/.claude/.memento/ctx_bridge-{projectHash}.json` before the session ends. Three hooks can write this file (only the first/richest write wins):
 
 1. **Tracker at 74%+**: Claude writes the bridge directly in response to the `[BRIDGE]` directive — richest content (Claude has full knowledge of files in progress, exact next step, current error).
 2. **PreCompact hook**: Uses `claude -p` AI extraction from the JSONL transcript tail — catches cases where the tracker directive was not actioned (e.g. compaction fired mid-turn between tracker checks).

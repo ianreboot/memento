@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — shared configuration and journal utilities (v0.5.3)
+// memento — shared configuration and journal utilities (v0.6.0)
 //
 // Handles:
 //   - Instance tag derivation (which journal file to use; one file per OS user)
@@ -27,9 +27,10 @@
 
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
-const os   = require('os');
+const fs     = require('fs');
+const path   = require('path');
+const os     = require('os');
+const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 // ---------------------------------------------------------------------------
@@ -133,6 +134,33 @@ function getProjectTag() {
   return 'default';
 }
 
+// Derive an 8-char hex hash that uniquely identifies the current project.
+// Used to namespace all file paths so parallel sessions in different project
+// directories do not share journal, ctx_bridge, or sidecar files.
+//
+// Resolution order:
+//   1. MEMENTO_PROJECT_HASH env var — explicit override (for testing or non-git contexts)
+//   2. SHA-1 of git root path (stable across subdirectory changes within a repo)
+//   3. SHA-1 of cwd (stable within a single hook invocation)
+//   4. "default" — last-resort fallback
+function getProjectHash() {
+  // Honor explicit override (for testing and non-git contexts)
+  const envHash = process.env.MEMENTO_PROJECT_HASH;
+  if (envHash && envHash.trim().length > 0) return envHash.trim();
+
+  // Primary: hash of git root path (stable across subdirectory changes within a repo)
+  let root;
+  try {
+    root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000,
+    }).trim();
+  } catch (e) {
+    // Fallback: cwd (stable within a single hook invocation)
+    try { root = process.cwd(); } catch (e2) { root = 'default'; }
+  }
+  return crypto.createHash('sha1').update(root).digest('hex').slice(0, 8);
+}
+
 function normalize(tag) {
   const result = tag.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-_]/g, '');
   return result || 'default';
@@ -147,12 +175,13 @@ function getClaudeDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 }
 
-// Returns the path to the journal file for a given instance tag.
+// Returns the path to the journal file for a given instance tag + project hash.
 // Creates the .memento directory if needed (silent-fail).
-function getJournalPath(claudeDir, instanceTag) {
+// Format: ~/.claude/.memento/{instanceTag}-{projectHash}.json
+function getJournalPath(claudeDir, instanceTag, projectHash) {
   const dir = path.join(claudeDir, '.memento');
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* silent */ }
-  return path.join(dir, `${instanceTag}.json`);
+  return path.join(dir, `${instanceTag}-${projectHash}.json`);
 }
 
 // Returns the path to the turn counter sidecar file.
@@ -354,12 +383,12 @@ function writeJournal(journalPath, data) {
 // ctx_bridge helpers
 // ---------------------------------------------------------------------------
 
-// Returns the path to the ctx_bridge file (~/.claude/.memento/ctx_bridge.json).
+// Returns the path to the ctx_bridge file (~/.claude/.memento/ctx_bridge-{projectHash}.json).
 // Creates the .memento directory if needed (silent-fail).
-function getCtxBridgePath(claudeDir) {
+function getCtxBridgePath(claudeDir, projectHash) {
   const dir = path.join(claudeDir, '.memento');
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
-  return path.join(dir, 'ctx_bridge.json');
+  return path.join(dir, `ctx_bridge-${projectHash}.json`);
 }
 
 // Walk ~/.claude/projects/ one level deep (hash dirs), find the most recently
@@ -546,6 +575,7 @@ function deleteCtxBridge(bridgePath) {
 module.exports = {
   getInstanceTag,
   getProjectTag,
+  getProjectHash,
   getClaudeDir,
   getJournalPath,
   getTurnSidecarPath,

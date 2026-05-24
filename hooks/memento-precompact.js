@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.5.3)
+// memento — PreCompact hook (v0.6.0)
 //
 // Runs before context compaction. Does two things:
 //
@@ -23,6 +23,7 @@ const { spawnSync } = require('child_process');
 const {
   getClaudeDir,
   getInstanceTag,
+  getProjectHash,
   getJournalPath,
   readJournal,
   getCtxBridgePath,
@@ -50,7 +51,8 @@ process.stdin.on('end', () => {
 function main() {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const journalPath = getJournalPath(claudeDir, instanceTag);
+  const projectHash = getProjectHash();
+  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
   const journal     = readJournal(journalPath);
 
   // Read current ctx% for pct field in bridge
@@ -72,7 +74,7 @@ function main() {
   // Write ctx_bridge.json if not already written by tracker.
   // Tracker's bridge is richer (Claude knew which files it was editing).
   // Here we only write if no bridge exists yet.
-  const bridgePath = getCtxBridgePath(claudeDir);
+  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
   if (!readCtxBridge(bridgePath)) {
     const transcriptPath = resolveTranscript(rawInput, claudeDir);
     const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, usedPct);

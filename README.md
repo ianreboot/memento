@@ -80,7 +80,7 @@ Compaction happens / next session starts
 
 ## Context Bridge
 
-When context usage reaches 74%, memento automatically writes a pre-compaction snapshot called `ctx_bridge.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
+When context usage reaches 74%, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{projectHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
 
 ```json
 {
@@ -111,7 +111,7 @@ Nothing appears in your conversation. The journal is a background process. Journ
 After compaction fires, Claude sees this injected silently into its system context:
 
 ```
-[MEMENTO] Recovering | path: /home/alice/.claude/.memento/alice.json
+[MEMENTO] Recovering | path: /home/alice/.claude/.memento/alice-a3f9c1b2.json
 Why: "fix auth middleware, mobile 401s — staging only, no token format changes" | Set: 2026-05-21T14:00:00Z
 Arc: "setup project" → "implement auth pipeline" → "fix auth middleware, mobile 401s — staging only, no token format changes"
 MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not action) before your first tool call. [GUESS] always valid.
@@ -125,6 +125,14 @@ Claude reads this before the first post-compaction message arrives and resumes w
 Writes are mandatory every turn. Before every response, Claude receives a MANDATORY WRITE prompt and must run the write command to capture current intent to disk. [GUESS] is always valid — Claude never gets stuck deciding what to write, even in sessions where intent has not been stated explicitly.
 
 To see what memento has saved at any point: `"what does memento have on this session?"` Claude reads and displays the journal directly.
+
+## Why the PreCompact Hook Uses an Inference Call
+
+The PreCompact hook is a shell process. Claude Code calls it before compaction, reads its stdout as a prompt injection, then proceeds. The hook runs and exits — it cannot wait for Claude to respond, and Claude may not be able to use tool calls during compaction.
+
+The only way to write a structured `ctx_bridge` snapshot (files, next step, error) at the PreCompact boundary — when no tracker bridge exists — is to spawn a separate `claude -p` process that reads the session transcript tail and extracts recovery state. Without this, the only fallback is the minimal bridge from `journal.why` (no files, no structured next step) — the same low-fidelity bridge SessionEnd writes.
+
+This is architecturally load-bearing. The hook system is one-way: hooks write to stdout and exit. There is no mechanism for a hook to wait for Claude to respond or write files. `claude -p` is the only way to perform AI extraction at compaction time.
 
 ## Install
 
@@ -196,7 +204,7 @@ Memento fills the gap between three existing layers:
 
 ## Privacy and Data
 
-**What is stored:** Current intent and intent history. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>.json`.
+**What is stored:** Current intent and intent history. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>-<projectHash>.json`. Each project gets its own file — two Claude Code windows in different project directories never share a journal.
 
 **What is not stored:** File contents, full command output, credentials, secrets, task results, or any data you have not asked to track. The UserPromptSubmit hook reads the turn counter and journal — it does not parse your message content.
 
@@ -209,7 +217,7 @@ Ask Claude: "what does memento have on this session?"
 
 **To clear a journal manually:**
 ```bash
-rm ~/.claude/.memento/<username>.json
+rm ~/.claude/.memento/<username>-<projectHash>.json
 ```
 
 **To see all journals:**
@@ -222,7 +230,7 @@ ls ~/.claude/.memento/
 Direct JSON edits are supported and intentional — they are the escape hatch when Claude writes something wrong and you want to fix it without waiting for Claude to correct itself.
 
 ```bash
-nano ~/.claude/.memento/<username>.json
+nano ~/.claude/.memento/<username>-<projectHash>.json
 ```
 
 Keep it valid JSON and avoid newlines inside string values. The hook re-reads the file on every session start and every user prompt, so changes take effect immediately — no restart needed.
@@ -233,15 +241,33 @@ All settings are optional. Memento works out of the box with no configuration.
 
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
-| `MEMENTO_INSTANCE_TAG` | OS username | Override journal filename — use when two Claude windows share an OS user, or multiple users share a machine account |
+| `MEMENTO_INSTANCE_TAG` | OS username | Override instance tag portion of journal filename — use when multiple users share a machine account |
+| `MEMENTO_PROJECT_HASH` | SHA-1 of git root | Override project hash for testing or non-git contexts. 8-char hex string. |
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
-| `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>.debug.json` |
+| `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>-<hash>.debug.json` |
 | `MEMENTO_CONTEXT_WINDOW_TOKENS` | `200000` | Override context window size for the 74% bridge threshold — use if your model has a different context window |
 | `MEMENTO_CLAUDE_BIN` | `claude` | Override the `claude` binary path used for transcript extraction in the PreCompact hook (useful for testing) |
 
 Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window.
 
 **Shared accounts**: If multiple users or Claude windows share the same OS user account, set a unique `MEMENTO_INSTANCE_TAG` per instance (e.g. `MEMENTO_INSTANCE_TAG=alice` and `MEMENTO_INSTANCE_TAG=bob`).
+
+## Upgrading from v0.5.x to v0.6.0
+
+**Breaking change**: journal and ctx_bridge files are now namespaced per project. Files from v0.5.x will not be found on upgrade.
+
+After upgrading, the first session in each project produces a "No prior journal" Turn 1 prompt — the same as first-install behavior. Claude creates a fresh journal at the new namespaced path. Existing intent history from v0.5.x is not migrated.
+
+**Clean up old files**: v0.5.x files (`{instanceTag}.json`, `ctx_bridge.json`) remain in `~/.claude/.memento/` as inert files. Safe to delete:
+```bash
+# Review first
+ls ~/.claude/.memento/
+
+# Delete old-format files (named without a project hash)
+# New files follow: {instanceTag}-{8charHex}.json
+```
+
+**What you get**: parallel Claude Code sessions in different project directories now have fully isolated state — no configuration required.
 
 ## Upgrading from v0.3.x and earlier
 

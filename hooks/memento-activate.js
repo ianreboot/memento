@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.5.6)
+// memento — SessionStart hook (v0.6.0)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -21,6 +21,7 @@
 const fs = require('fs');
 const {
   getInstanceTag,
+  getProjectHash,
   getClaudeDir,
   getJournalPath,
   getTurnSidecarPath,
@@ -52,7 +53,8 @@ function run(rawInput) {
 
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const journalPath = getJournalPath(claudeDir, instanceTag);
+  const projectHash = getProjectHash();
+  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
   const turnPath    = getTurnSidecarPath(journalPath);
 
   const isRecovery = (source === 'compact' || source === 'resume');
@@ -68,7 +70,7 @@ function run(rawInput) {
 
   // Always consume bridge if present — file existence is the signal, not source.
   // Previous: only consumed on source=startup, leaving bridge stale on source=compact/resume.
-  const bridgePath = getCtxBridgePath(claudeDir);
+  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
   const bridge     = readCtxBridge(bridgePath);
   let bridgeStr = '';
   if (bridge) {

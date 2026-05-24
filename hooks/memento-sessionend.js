@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionEnd hook (v0.5.5)
+// memento — SessionEnd hook (v0.6.0)
 //
 // Runs when Claude Code session ends (clean exit, crash, or interrupt).
 // Writes a minimal ctx_bridge.json from journal.why so that on restart,
@@ -20,6 +20,7 @@
 const {
   getClaudeDir,
   getInstanceTag,
+  getProjectHash,
   getJournalPath,
   readJournal,
   getCtxBridgePath,
@@ -45,7 +46,8 @@ process.stdin.on('end', () => {
 function main() {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const journalPath = getJournalPath(claudeDir, instanceTag);
+  const projectHash = getProjectHash();
+  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
   const journal     = readJournal(journalPath);
 
   // Read current ctx% for pct field in bridge
@@ -65,7 +67,7 @@ function main() {
 
   // Write minimal bridge only if none exists. Existing bridge (tracker at ≥74%
   // or PreCompact) is richer — preserve it.
-  const bridgePath = getCtxBridgePath(claudeDir);
+  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
   if (!readCtxBridge(bridgePath) && why) {
     writeCtxBridge(bridgePath, {
       files: [],

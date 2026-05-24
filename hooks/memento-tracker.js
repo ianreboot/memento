@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.5.2)
+// memento — UserPromptSubmit hook (v0.6.0)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -18,6 +18,7 @@
 const fs = require('fs');
 const {
   getInstanceTag,
+  getProjectHash,
   getClaudeDir,
   getJournalPath,
   getTurnSidecarPath,
@@ -52,7 +53,8 @@ process.stdin.on('end', () => {
 function run(rawInput) {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const journalPath = getJournalPath(claudeDir, instanceTag);
+  const projectHash = getProjectHash();
+  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
   const turnPath    = getTurnSidecarPath(journalPath);
 
   // Read current turn counter (0 = Turn 1, >0 = Turn N)
@@ -84,7 +86,7 @@ function run(rawInput) {
     }
   }
 
-  const bridgePath  = getCtxBridgePath(claudeDir);
+  const bridgePath  = getCtxBridgePath(claudeDir, projectHash);
   const lastCtxPath = getLastCtxPath(journalPath);
 
   // Drop detection: a significant ctx% drop means a compaction just occurred.

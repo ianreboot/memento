@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — journal write helper (v0.5.6)
+// memento — journal write helper (v0.6.0)
 //
 // Invoked by Claude to write the journal without requiring a prior Read tool call.
 // Usage: node memento-write-why.js '<why string>'
@@ -15,6 +15,7 @@
 
 const {
   getInstanceTag,
+  getProjectHash,
   getClaudeDir,
   getJournalPath,
   readJournal,
@@ -27,7 +28,8 @@ try {
 
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const journalPath = getJournalPath(claudeDir, instanceTag);
+  const projectHash = getProjectHash();
+  const journalPath = getJournalPath(claudeDir, instanceTag, projectHash);
 
   const existing    = readJournal(journalPath);
   const prevWhy     = existing && typeof existing.why === 'string' ? existing.why : null;

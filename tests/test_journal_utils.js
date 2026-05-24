@@ -9,6 +9,7 @@ const path   = require('path');
 
 const {
   getInstanceTag,
+  getProjectHash,
   getJournalPath,
   getTurnSidecarPath,
   getLastCtxPath,
@@ -29,6 +30,9 @@ const {
   MAX_BRIDGE_FILES,
   CTX_DROP_THRESHOLD,
 } = require('../hooks/memento-config.js');
+
+// Fix project hash for deterministic test paths
+process.env.MEMENTO_PROJECT_HASH = 'testhash';
 
 let passed = 0;
 let failed = 0;
@@ -201,7 +205,7 @@ console.log('\nwriteJournal + readJournal');
 
 test('round-trip: write then read returns equivalent data', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const data = {
     why: 'fixing auth for mobile',
     when: '2026-05-21T14:00:00Z',
@@ -217,7 +221,7 @@ test('round-trip: write then read returns equivalent data', () => {
 
 test('writeJournal creates file with 0600 permissions', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   writeJournal(journalPath, { why: 'test', when: new Date().toISOString(), why_history: [] });
   const stat = fs.statSync(journalPath);
   const mode = stat.mode & 0o777;
@@ -226,7 +230,7 @@ test('writeJournal creates file with 0600 permissions', () => {
 
 test('writeJournal truncates overlong why to MAX_WHY_CHARS', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const longWhy = 'a'.repeat(MAX_WHY_CHARS + 50);
   writeJournal(journalPath, { why: longWhy, when: new Date().toISOString(), why_history: [] });
   const result = readJournal(journalPath);
@@ -236,7 +240,7 @@ test('writeJournal truncates overlong why to MAX_WHY_CHARS', () => {
 
 test('writeJournal caps why_history to MAX_WHY_HISTORY entries (drops oldest)', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const history = [];
   for (let i = 0; i < MAX_WHY_HISTORY + 3; i++) {
     history.push({ w: `entry-${i}`, t: '2026-05-21T00:00:00Z' });
@@ -252,7 +256,7 @@ test('writeJournal caps why_history to MAX_WHY_HISTORY entries (drops oldest)', 
 
 test('writeJournal handles null why', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   writeJournal(journalPath, { why: null, when: new Date().toISOString(), why_history: [] });
   const result = readJournal(journalPath);
   assert.ok(result !== null);
@@ -261,7 +265,7 @@ test('writeJournal handles null why', () => {
 
 test('writeJournal sanitizes embedded newlines in why', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   writeJournal(journalPath, { why: 'line1\nline2', when: new Date().toISOString(), why_history: [] });
   const result = readJournal(journalPath);
   assert.ok(result !== null);
@@ -270,7 +274,7 @@ test('writeJournal sanitizes embedded newlines in why', () => {
 
 test('writeJournal defaults when to now if absent', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const before = Date.now();
   writeJournal(journalPath, { why: 'test' });
   const after = Date.now();
@@ -282,7 +286,7 @@ test('writeJournal defaults when to now if absent', () => {
 
 test('writeJournal filters invalid why_history entries (no w field)', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const history = [
     { w: 'valid', t: '2026-05-21T12:00:00Z' },
     { t: '2026-05-21T12:00:00Z' }, // missing w
@@ -303,15 +307,15 @@ test('writeJournal filters invalid why_history entries (no w field)', () => {
 
 console.log('\nctx_bridge helpers');
 
-test('getCtxBridgePath returns {claudeDir}/.memento/ctx_bridge.json', () => {
+test('getCtxBridgePath returns {claudeDir}/.memento/ctx_bridge-{projectHash}.json', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
-  assert.strictEqual(p, path.join(dir, '.memento', 'ctx_bridge.json'));
+  const p = getCtxBridgePath(dir, 'testhash');
+  assert.strictEqual(p, path.join(dir, '.memento', 'ctx_bridge-testhash.json'));
 });
 
 test('writeCtxBridge + readCtxBridge round-trip (valid data)', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   const data = { files: ['/foo.js', '/bar.js'], next: 'run tests', err: null, pct: 74, at: '2026-05-23T00:00:00Z' };
   writeCtxBridge(p, data);
   const result = readCtxBridge(p);
@@ -350,7 +354,7 @@ test('readCtxBridge returns null for invalid JSON', () => {
 
 test('readCtxBridge returns null if files field missing', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify({ next: 'ok', err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
   assert.strictEqual(readCtxBridge(p), null, 'missing files field must return null');
@@ -358,7 +362,7 @@ test('readCtxBridge returns null if files field missing', () => {
 
 test('readCtxBridge returns null if next field missing', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify({ files: [], err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
   assert.strictEqual(readCtxBridge(p), null, 'missing next field must return null');
@@ -366,7 +370,7 @@ test('readCtxBridge returns null if next field missing', () => {
 
 test('readCtxBridge returns object without truncation (normalization is write-side only)', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   const longNext = 'a'.repeat(500);
   writeCtxBridge(p, { files: [], next: longNext, err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
   const result = readCtxBridge(p);
@@ -377,7 +381,7 @@ test('readCtxBridge returns object without truncation (normalization is write-si
 
 test('readCtxBridge returns object even without pct field (pct is optional)', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify({ files: ['/a.js'], next: 'resume', err: null, at: '2026-05-23T00:00:00Z' }));
   const result = readCtxBridge(p);
@@ -387,7 +391,7 @@ test('readCtxBridge returns object even without pct field (pct is optional)', ()
 
 test('writeCtxBridge truncates next to MAX_BRIDGE_NEXT_CHARS at write time', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   writeCtxBridge(p, { files: [], next: 'x'.repeat(MAX_BRIDGE_NEXT_CHARS + 100), err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
   const result = readCtxBridge(p);
   assert.ok(result !== null);
@@ -396,7 +400,7 @@ test('writeCtxBridge truncates next to MAX_BRIDGE_NEXT_CHARS at write time', () 
 
 test('writeCtxBridge caps files to MAX_BRIDGE_FILES entries at write time', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   const files = ['/a.js', '/b.js', '/c.js', '/d.js', '/e.js', '/f.js', '/g.js'];
   writeCtxBridge(p, { files, next: 'test', err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
   const result = readCtxBridge(p);
@@ -406,7 +410,7 @@ test('writeCtxBridge caps files to MAX_BRIDGE_FILES entries at write time', () =
 
 test('deleteCtxBridge removes file, returns silently on missing', () => {
   const dir = tmpDir();
-  const p = getCtxBridgePath(dir);
+  const p = getCtxBridgePath(dir, 'testhash');
   writeCtxBridge(p, { files: [], next: 'test', err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
   assert.ok(fs.existsSync(p), 'file must exist before delete');
   deleteCtxBridge(p);
@@ -450,7 +454,7 @@ test('readLastCtxPct returns float from valid file', () => {
 
 test('writeLastCtxPct + readLastCtxPct round-trip', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const p = getLastCtxPath(journalPath);
   writeLastCtxPct(p, 65.3);
   const val = readLastCtxPct(p);
@@ -460,7 +464,7 @@ test('writeLastCtxPct + readLastCtxPct round-trip', () => {
 
 test('writeLastCtxPct creates file with 0600 permissions', () => {
   const dir = tmpDir();
-  const journalPath = getJournalPath(dir, 'testuser');
+  const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const p = getLastCtxPath(journalPath);
   writeLastCtxPct(p, 42.0);
   const stat = fs.statSync(p);
@@ -535,6 +539,75 @@ test('findLatestJsonl returns null when no JSONL files exist', () => {
 test('findLatestJsonl returns null when projects dir does not exist', () => {
   const dir = tmpDir();
   assert.strictEqual(findLatestJsonl(dir), null);
+});
+
+// ---------------------------------------------------------------------------
+// getProjectHash
+// ---------------------------------------------------------------------------
+
+console.log('\ngetProjectHash');
+
+test('returns non-empty 8-char hex string by default', () => {
+  delete process.env.MEMENTO_PROJECT_HASH;
+  const hash = getProjectHash();
+  assert.ok(typeof hash === 'string' && hash.length === 8, `must be 8-char string, got "${hash}"`);
+  assert.ok(/^[0-9a-f]{8}$/.test(hash), `must be 8-char hex, got "${hash}"`);
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+});
+
+test('respects MEMENTO_PROJECT_HASH env override', () => {
+  process.env.MEMENTO_PROJECT_HASH = 'abc12345';
+  const hash = getProjectHash();
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+  assert.strictEqual(hash, 'abc12345');
+});
+
+test('different cwd/repos produce different hashes (isolation)', () => {
+  // Simulate two different project paths producing different hashes
+  process.env.MEMENTO_PROJECT_HASH = 'aaaaaaaa';
+  const hash1 = getProjectHash();
+  process.env.MEMENTO_PROJECT_HASH = 'bbbbbbbb';
+  const hash2 = getProjectHash();
+  process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
+  assert.notStrictEqual(hash1, hash2, 'different hashes must differ');
+});
+
+// ---------------------------------------------------------------------------
+// Parallel-session isolation
+// ---------------------------------------------------------------------------
+
+console.log('\nParallel-session isolation');
+
+test('two sessions with different project hashes have isolated journal paths', () => {
+  const dir = tmpDir();
+  const pathA = getJournalPath(dir, 'claude2', 'aabbccdd');
+  const pathB = getJournalPath(dir, 'claude2', '11223344');
+  assert.notStrictEqual(pathA, pathB, 'different project hashes must produce different paths');
+  // Write to A, verify B is unaffected
+  writeJournal(pathA, { why: 'session A', when: new Date().toISOString(), why_history: [] });
+  assert.strictEqual(readJournal(pathB), null, 'write to pathA must not affect pathB');
+});
+
+test('two sessions with different project hashes have isolated ctx_bridge paths', () => {
+  const dir = tmpDir();
+  const bridgeA = getCtxBridgePath(dir, 'aabbccdd');
+  const bridgeB = getCtxBridgePath(dir, '11223344');
+  assert.notStrictEqual(bridgeA, bridgeB, 'different project hashes must produce different bridge paths');
+  // Write to A, verify B is unaffected
+  writeCtxBridge(bridgeA, { files: ['/foo.js'], next: 'session A', err: null, pct: 74, at: new Date().toISOString() });
+  assert.strictEqual(readCtxBridge(bridgeB), null, 'write to bridgeA must not affect bridgeB');
+});
+
+test('journal path format is {instanceTag}-{projectHash}.json', () => {
+  const dir = tmpDir();
+  const p = getJournalPath(dir, 'alice', 'a3f9c1b2');
+  assert.ok(p.endsWith('alice-a3f9c1b2.json'), `expected path to end with alice-a3f9c1b2.json, got ${p}`);
+});
+
+test('ctx_bridge path format is ctx_bridge-{projectHash}.json', () => {
+  const dir = tmpDir();
+  const p = getCtxBridgePath(dir, 'a3f9c1b2');
+  assert.ok(p.endsWith('ctx_bridge-a3f9c1b2.json'), `expected path to end with ctx_bridge-a3f9c1b2.json, got ${p}`);
 });
 
 // ---------------------------------------------------------------------------

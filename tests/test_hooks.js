@@ -39,12 +39,13 @@ function runHook(script, input, extraEnv = {}) {
     env: Object.assign({}, process.env, {
       MEMENTO_DEBUG: '',
       MEMENTO_INSTANCE_TAG: 'testuser',
+      MEMENTO_PROJECT_HASH: 'testhash',
     }, extraEnv),
     timeout: 5000,
   });
 }
 
-// Write a v0.4.0 journal to dir/.memento/testuser.json
+// Write a v0.4.0 journal to dir/.memento/testuser-testhash.json
 function writeV4Journal(dir, overrides = {}) {
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
@@ -53,7 +54,7 @@ function writeV4Journal(dir, overrides = {}) {
     when:        '2026-05-21T14:00:00Z',
     why_history: [{ w: 'setup project', t: '2026-05-21T12:00:00Z' }],
   }, overrides);
-  const journalPath = path.join(mementoDir, 'testuser.json');
+  const journalPath = path.join(mementoDir, 'testuser-testhash.json');
   fs.writeFileSync(journalPath, JSON.stringify(journal, null, 2));
   return journalPath;
 }
@@ -70,21 +71,21 @@ function writeOldSchemaJournal(dir) {
     done:           [],
     plan:           [],
   };
-  const journalPath = path.join(mementoDir, 'testuser.json');
+  const journalPath = path.join(mementoDir, 'testuser-testhash.json');
   fs.writeFileSync(journalPath, JSON.stringify(journal, null, 2));
   return journalPath;
 }
 
 // Write the turn sidecar file
 function writeTurnSidecar(dir, value) {
-  const sidecarPath = path.join(dir, '.memento', 'testuser.turn');
+  const sidecarPath = path.join(dir, '.memento', 'testuser-testhash.turn');
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
   fs.writeFileSync(sidecarPath, String(value));
 }
 
 // Read the turn sidecar file
 function readTurnSidecar(dir) {
-  const sidecarPath = path.join(dir, '.memento', 'testuser.turn');
+  const sidecarPath = path.join(dir, '.memento', 'testuser-testhash.turn');
   try { return parseInt(fs.readFileSync(sidecarPath, 'utf8').trim(), 10); } catch (e) { return null; }
 }
 
@@ -390,7 +391,7 @@ function writeCtxBridgeFile(dir, overrides = {}) {
     pct:   74,
     at:    '2026-05-23T00:00:00Z',
   }, overrides);
-  const p = path.join(mementoDir, 'ctx_bridge.json');
+  const p = path.join(mementoDir, 'ctx_bridge-testhash.json');
   fs.writeFileSync(p, JSON.stringify(bridge, null, 2));
   return p;
 }
@@ -492,7 +493,7 @@ test('[BRIDGE] includes the bridge file path', () => {
   const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
   const ctx = parseAdditionalContext(r.stdout);
   assert.ok(ctx !== null);
-  assert.ok(ctx.includes('ctx_bridge.json'), 'must include ctx_bridge.json path in directive');
+  assert.ok(ctx.includes('ctx_bridge-testhash.json'), 'must include ctx_bridge-testhash.json path in directive');
 });
 
 test('[BRIDGE] does not fire when JSONL at 60% used', () => {
@@ -528,7 +529,7 @@ test('spike guard skips if bridge file already exists', () => {
   // Pre-create bridge file
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
-  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), '{"files":[],"next":"test","err":null,"pct":65,"at":"2026-05-23T00:00:00Z"}');
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge-testhash.json'), '{"files":[],"next":"test","err":null,"pct":65,"at":"2026-05-23T00:00:00Z"}');
   const r = runHook('memento-tracker.js', '{}', { CLAUDE_CONFIG_DIR: dir });
   const ctx = parseAdditionalContext(r.stdout);
   assert.ok(ctx !== null);
@@ -546,11 +547,11 @@ console.log('\nmemento-tracker.js (drop detection)');
 function writeLastCtxFile(dir, pct) {
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
-  fs.writeFileSync(path.join(mementoDir, 'testuser.last_ctx'), String(pct));
+  fs.writeFileSync(path.join(mementoDir, 'testuser-testhash.last_ctx'), String(pct));
 }
 
 function readLastCtxFile(dir) {
-  const p = path.join(dir, '.memento', 'testuser.last_ctx');
+  const p = path.join(dir, '.memento', 'testuser-testhash.last_ctx');
   try { return parseFloat(fs.readFileSync(p, 'utf8').trim()); } catch (e) { return null; }
 }
 
@@ -781,7 +782,7 @@ test('precompact: writes bridge via claude -p when no existing bridge', () => {
   const r = runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
   assert.strictEqual(r.status, 0);
 
-  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge-testhash.json');
   assert.ok(fs.existsSync(bridgePath), 'bridge must be written by hook');
   const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
   assert.deepStrictEqual(bridge.files, ['/home/foo.js'], 'files must come from claude -p output');
@@ -799,11 +800,11 @@ test('precompact: does NOT overwrite existing bridge (tracker bridge is richer)'
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
   const existing = '{"files":["/old.js"],"next":"old step","err":null,"pct":78,"at":"2026-05-23T00:00:00Z"}';
-  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'), existing);
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge-testhash.json'), existing);
 
   runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
 
-  const bridge = JSON.parse(fs.readFileSync(path.join(mementoDir, 'ctx_bridge.json'), 'utf8'));
+  const bridge = JSON.parse(fs.readFileSync(path.join(mementoDir, 'ctx_bridge-testhash.json'), 'utf8'));
   assert.strictEqual(bridge.next, 'old step', 'must preserve tracker-written bridge');
   assert.deepStrictEqual(bridge.files, ['/old.js'], 'must preserve tracker-written files');
 });
@@ -816,7 +817,7 @@ test('precompact: falls back to journal.why if claude -p fails', () => {
 
   runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
 
-  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge-testhash.json');
   assert.ok(fs.existsSync(bridgePath), 'fallback bridge must be written');
   const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
   assert.strictEqual(bridge.next, 'implementing feature X', 'fallback next must equal journal.why');
@@ -830,7 +831,7 @@ test('precompact: no bridge written if no journal and claude -p unavailable', ()
 
   runHook('memento-precompact.js', '{}', { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
 
-  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge-testhash.json');
   assert.ok(!fs.existsSync(bridgePath), 'no bridge must be written without journal fallback');
 });
 
@@ -845,7 +846,7 @@ test('precompact: uses transcript_path from stdin when valid', () => {
   const stdin = JSON.stringify({ transcript_path: jsonlPath });
   runHook('memento-precompact.js', stdin, { CLAUDE_CONFIG_DIR: dir, MEMENTO_CLAUDE_BIN: fakeClaude });
 
-  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge-testhash.json');
   assert.ok(fs.existsSync(bridgePath), 'bridge must be written using stdin transcript_path');
   const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
   assert.strictEqual(bridge.err, 'TypeError', 'err must come from claude -p output');
@@ -874,7 +875,7 @@ test('sessionend: writes minimal bridge directly from journal.why (v0.5.5: no cl
   const r = runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir });
   assert.strictEqual(r.status, 0);
 
-  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge-testhash.json');
   assert.ok(fs.existsSync(bridgePath), 'bridge must be written by sessionend hook');
   const bridge = JSON.parse(fs.readFileSync(bridgePath, 'utf8'));
   assert.deepStrictEqual(bridge.files, [], 'files must always be empty (minimal bridge)');
@@ -889,12 +890,12 @@ test('sessionend: does NOT overwrite existing bridge', () => {
   // Pre-existing bridge (e.g. written by tracker at 78%)
   const mementoDir = path.join(dir, '.memento');
   fs.mkdirSync(mementoDir, { recursive: true });
-  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge.json'),
+  fs.writeFileSync(path.join(mementoDir, 'ctx_bridge-testhash.json'),
     '{"files":["/old.js"],"next":"old step","err":null,"pct":78,"at":"2026-05-23T00:00:00Z"}');
 
   runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir });
 
-  const bridge = JSON.parse(fs.readFileSync(path.join(mementoDir, 'ctx_bridge.json'), 'utf8'));
+  const bridge = JSON.parse(fs.readFileSync(path.join(mementoDir, 'ctx_bridge-testhash.json'), 'utf8'));
   assert.strictEqual(bridge.next, 'old step', 'must preserve existing bridge');
 });
 
@@ -903,7 +904,7 @@ test('sessionend: no bridge written if no journal', () => {
   // No journal at all
   runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir });
 
-  const bridgePath = path.join(dir, '.memento', 'ctx_bridge.json');
+  const bridgePath = path.join(dir, '.memento', 'ctx_bridge-testhash.json');
   assert.ok(!fs.existsSync(bridgePath), 'no bridge must be written without journal');
 });
 
@@ -933,13 +934,14 @@ function runWriteScript(why, extraEnv = {}) {
     env: Object.assign({}, process.env, {
       MEMENTO_DEBUG: '',
       MEMENTO_INSTANCE_TAG: 'testuser',
+      MEMENTO_PROJECT_HASH: 'testhash',
     }, extraEnv),
     timeout: 5000,
   });
 }
 
 function readWrittenJournal(dir) {
-  const journalPath = path.join(dir, '.memento', 'testuser.json');
+  const journalPath = path.join(dir, '.memento', 'testuser-testhash.json');
   try { return JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch (e) { return null; }
 }
 
@@ -1003,7 +1005,7 @@ test('write-why: produces no stdout output', () => {
 test('write-why: written journal uses atomic writeJournal (0600 permissions)', () => {
   const dir = tmpDir();
   runWriteScript('fixing auth for mobile', { CLAUDE_CONFIG_DIR: dir });
-  const journalPath = path.join(dir, '.memento', 'testuser.json');
+  const journalPath = path.join(dir, '.memento', 'testuser-testhash.json');
   const st = fs.statSync(journalPath);
   // Check owner-read-write, no group/other permissions (0600)
   // eslint-disable-next-line no-bitwise

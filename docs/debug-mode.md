@@ -177,3 +177,23 @@ When debug mode is disabled, the file is deleted automatically at the next sessi
 ```bash
 cp ~/.claude/.memento/alice-a3f9c1b2.debug.json ~/memento-debug-$(date +%Y%m%d).json
 ```
+
+## Testing the ctx_bridge threshold
+
+To verify that the tracker hook writes a ctx_bridge at 74% context, you need to actually fill the context window. Two behaviors make this non-obvious:
+
+**Persisted-output**: Claude Code's mechanism for handling large outputs. When a Bash command produces more than ~40KB of stdout, or when a file read via the Read tool exceeds ~50KB, the result is saved to disk and only a 2KB preview is injected into the API context. This means reading large files does not fill the context window in any meaningful way.
+
+**Caching**: Claude caches repeated reads of the same file. Reading the same file twice adds tokens once, not twice.
+
+**What works**: Use the Read tool on source files between 20-40KB each. Each such read adds roughly 6,000-9,000 tokens to context. At a 200K token window, moving from 20% to 74% requires approximately 108,000 tokens — around 15-18 file reads. A good source is `node_modules/eslint/lib/rules/` which contains dozens of files in this size range.
+
+**context-snapshot.json lag**: The snapshot at `~/.claude/.memento/context-snapshot.json` is written at UserPromptSubmit (the start of each turn). It reflects context usage as of when the user sent their message, not the current state mid-turn. After a turn with many file reads, the snapshot will show a stale, lower percentage. The bridge write threshold is checked against this snapshot at the *next* UserPromptSubmit. This is expected behavior — the snapshot represents "context at turn start", not "context right now".
+
+**Verifying the bridge fired**: After a compaction, the ctx_bridge file will be absent (consumed and deleted by SessionStart). Look for the confirmation in the system-reminder injected at session start:
+
+```
+SessionStart:compact hook success: [CTX BRIDGE] Written at 74% | Files: (none)
+```
+
+`Files: (none)` is normal when no files were explicitly listed in the bridge — it means the recovery contained the `why` and `next` fields but no file list. This is the expected output when Claude wrote the bridge via the [BRIDGE] directive without explicit file tracking.

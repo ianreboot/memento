@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1 — 2026-05-26
+
+- **Fix**: ctx_bridge injection phrasing changed from `Next: "..."` to `Prior session: "..." - verify still relevant` in both `buildBridgeInjection()` functions (activate.js and tracker.js). The directive form caused prior-session context to persist as a standing instruction, overriding explicit user redirects in subsequent turns. The informational form signals provenance rather than a task queue entry.
+- **New (SKILL.md)**: behavioral rule to treat `Prior session:` as cleared when the user's opening message establishes a different project or task. Do not use it to resolve ambiguous phrases in later messages.
+- **New (SKILL.md)**: why-quality self-check — "if a fresh session read only your why, would it know what question this work is trying to answer?" — and anti-pattern note for turn-type descriptions ("answering a question about X").
+- **Docs**: README note on cross-instance limitation — journal context does not transfer across instances; cross-instance work requires an explicit handoff file.
+
 ## v0.7.0 — 2026-05-24
 
 **Breaking change**: journal and ctx_bridge files are now namespaced per conversation (SHA-1 of JSONL path) rather than per project (SHA-1 of git root). v0.6.x files will not be found on upgrade. Claude creates a fresh journal on first run (identical to first-install behavior).

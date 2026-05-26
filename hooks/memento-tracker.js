@@ -189,7 +189,7 @@ function buildBridgeInjection(bridge) {
   const filesStr = bridge.files && bridge.files.length > 0 ? bridge.files.join(', ') : '(none)';
   const errStr   = bridge.err ? ` | Error: ${bridge.err}` : '';
   return `[CTX BRIDGE] Written at ${bridge.pct ?? '?'}% | Files: ${filesStr}\n` +
-         `Next: "${bridge.next}"${errStr}\n` +
+         `Prior session: "${bridge.next}"${errStr} - verify still relevant\n` +
          `Read the listed files before resuming work.`;
 }
 

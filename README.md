@@ -206,6 +206,8 @@ Memento fills the gap between three existing layers:
 
 **What is stored:** Current intent and intent history. Stored in `$CLAUDE_CONFIG_DIR/.memento/<username>-<conversationHash>.json`. Each conversation gets its own file — two Claude Code windows in the same project directory never share a journal.
 
+**Cross-instance sessions**: memento is per-session and per-instance. Journal context does not transfer across instances (different containers, parallel sessions, or hand-offs to another user's Claude). For cross-instance work, write an explicit handoff file — the receiving instance starts with a blank journal.
+
 **What is not stored:** File contents, full command output, credentials, secrets, task results, or any data you have not asked to track. The UserPromptSubmit hook reads the turn counter and journal — it does not parse your message content.
 
 **Who can read it:** Only your local user account. Files are created with `0600` permissions (owner read/write only). Writes are atomic (temp file + rename) and symlink-safe — memento defends against symlink-clobber attacks at both the file and parent-directory level.

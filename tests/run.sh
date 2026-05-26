@@ -18,4 +18,8 @@ echo "--- test_symlink_safety ---"
 node tests/test_symlink_safety.js
 
 echo ""
+echo "--- test_version_consistency ---"
+node tests/test_version_consistency.js
+
+echo ""
 echo "All tests passed."

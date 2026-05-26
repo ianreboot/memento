@@ -1,3 +1,4 @@
+
 # memento — Project Instructions
 
 ## What This Is
@@ -147,4 +148,9 @@ All 3 test files run automatically (`test_journal_utils.js`, `test_hooks.js`, `t
 - **Respect `CLAUDE_CONFIG_DIR`** env var. Never hardcode `~/.claude`.
 - **Any new file write** must go through `writeJournal()` — do not use `fs.writeFileSync` directly on the journal path (reopens the symlink-clobber attack surface).
 - **README is public-facing** — keep it accurate and jargon-light. Document all behavior changes there.
+- **Version bump checklist** — when incrementing the version, update ALL four locations or the release is incomplete:
+  1. `.claude-plugin/plugin.json` — `"version"` field
+  2. `.claude-plugin/marketplace.json` — `"version"` field inside the plugins array
+  3. `hooks/memento-activate.js` — line 2 comment: `// memento — SessionStart hook (vX.Y.Z)`
+  4. `hooks/memento-tracker.js` — line 2 comment: `// memento — UserPromptSubmit hook (vX.Y.Z)`
 

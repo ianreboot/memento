@@ -118,7 +118,23 @@ MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not a
 node ~/.claude/hooks/memento-write-why.js '<your why>'
 ```
 
-Claude reads this before the first post-compaction message arrives and resumes with the correct intent — including constraints — without asking you to re-explain anything.
+When a ctx_bridge was written (74%+ or session end), the recovery includes a second block with structured resumption state:
+
+```
+[CTX BRIDGE] Written at 76% | Files: src/auth.js, tests/auth.test.js
+Prior session: "fix the 401 on line 47, then run npm test" - verify still relevant
+Read the listed files before resuming work.
+
+[MEMENTO] Recovering | path: /home/alice/.claude/.memento/alice-a3f9c1b2.json
+Why: "fix auth middleware, mobile 401s — staging only, no token format changes" | Set: 2026-05-21T14:00:00Z
+Arc: "setup project" → "implement auth pipeline" → "fix auth middleware, mobile 401s — staging only, no token format changes"
+MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not action) before your first tool call. [GUESS] always valid.
+node ~/.claude/hooks/memento-write-why.js '<your why>'
+```
+
+The `Prior session:` line is informational, not a directive. If the user's opening message redirects to a different task, Claude treats it as cleared and follows the user's lead.
+
+Claude reads both blocks before the first post-compaction message arrives and resumes with the correct intent — including constraints — without asking you to re-explain anything.
 
 ## How Reliable Is It?
 

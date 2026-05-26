@@ -27,9 +27,11 @@
 
 ---
 
-Context compaction erases more than task history — it erases intent. A recovering Claude might know it was fixing auth, but not that the constraint was "staging only, no token format changes." Memento captures the *why* before every compaction and surfaces it at recovery, so Claude picks up with the same reasoning, not just the same task.
+You tell Claude the constraints at the start of a session. An hour later, compaction fires. Claude's summary captures the task list but loses the reasoning. It no longer knows why you're doing it, what's off-limits, or what decision was made and why. Now it's working with the same tasks but wrong assumptions. Or it asks you to re-explain something you already explained.
 
-Unlike memory tools that require Claude to query a store, memento *pushes* context automatically — so even a just-compacted Claude recovers without knowing it needs to ask. Install takes 10 seconds, adds ~100–200 tokens at session recovery (depending on history depth), and runs invisibly in the background.
+Memento fixes this. It captures the *why* before every compaction and injects it at recovery, so Claude resumes with the same reasoning, not just the same task list.
+
+Unlike memory tools that require Claude to query a store, memento *pushes* context automatically. A just-compacted Claude doesn't need to know it should ask for context — it's already there. Install takes 10 seconds, adds ~100–200 tokens at session recovery, and runs invisibly in the background.
 
 ## The Problem
 
@@ -175,6 +177,8 @@ bash ~/.claude/hooks/install.sh --uninstall
 Requires Node.js 14.14+. Restart Claude Code after installing.
 
 **Verify:** In a new session, ask Claude: `"what does memento have on this session?"` — Claude should confirm the journal path and acknowledge no prior journal exists yet.
+
+If memento saves you from re-explaining yourself, [star the repo](https://github.com/ianreboot/memento/stargazers) to help others find it.
 
 ## What Gets Journaled
 

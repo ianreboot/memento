@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — shared configuration and journal utilities (v0.7.0)
+// memento — shared configuration and journal utilities (v0.8.0)
 //
 // Handles:
 //   - Instance tag derivation (which journal file to use; one file per OS user)
@@ -55,9 +55,23 @@ const TAG_BLOCKLIST = new Set([
 
 const DEBUG = process.env.MEMENTO_DEBUG === '1';
 
-// Context window size (tokens). Env override consistent with MEMENTO_MAX_FILE_KB pattern.
-// Default 200000 is correct for all Claude 3+ and 4+ model families.
-const CONTEXT_WINDOW = parseInt(process.env.MEMENTO_CONTEXT_WINDOW_TOKENS || '', 10) || 200000;
+// Context window sizes (tokens). Two sizes ship today: the 200k base and the
+// 1M extended window. The active window is resolved per conversation at runtime
+// by resolveWindow() — never a single module constant — because the same model
+// id serves both sizes and the hook payload does not report which is active.
+const DEFAULT_CONTEXT_WINDOW = 200000;
+const LARGE_CONTEXT_WINDOW   = 1000000;
+
+// A 200k window cannot physically hold more than 200k tokens, so observed usage
+// above this margin proves the active window is the larger one. Once crossed,
+// the result is latched per conversation (monotonic — it never reverts).
+const WINDOW_FLIP_TOKENS = 210000;
+
+// Auto-compaction fires at a fraction of the window, not at a fixed distance from
+// its edge — so the bridge trigger must be measured against this point to give the
+// same real runway on every window size. Set conservatively below the observed
+// auto-compact point so the bridge always lands before compaction.
+const AUTO_COMPACT_FRACTION = 0.85;
 
 // ctx_bridge field limits
 const MAX_BRIDGE_NEXT_CHARS = 300;
@@ -65,13 +79,21 @@ const MAX_BRIDGE_FILES      = 5;
 const MAX_BRIDGE_FILE_CHARS = 100;
 const MAX_BRIDGE_ERR_CHARS  = 300;
 
-// Trigger thresholds for [BRIDGE] directive
-const BRIDGE_TRIGGER_PCT  = 74;   // % of context window used — 10pp before ~84% compaction
-const BRIDGE_SPIKE_TOKENS = 3000; // cache_write spike guard threshold
+// Trigger thresholds for [BRIDGE] directive, in absolute tokens (window-independent).
+// BRIDGE_TRIGGER_TOKENS is the runway before the compaction point at which the
+// directive fires — sized above the largest plausible single-turn growth so usage
+// cannot leap from below the trigger straight into compaction in one turn.
+const BRIDGE_TRIGGER_TOKENS = 40000;
+const BRIDGE_SPIKE_TOKENS   = 3000; // cache_write spike guard threshold
 
-// Minimum ctx% drop between turns that unambiguously signals a compaction occurred.
-// Context only grows between turns — any drop is compaction. 20pp margin for safety.
-const CTX_DROP_THRESHOLD = 20;
+// Minimum token drop between turns that unambiguously signals a compaction occurred.
+// Context only grows between turns — any real drop is compaction. Measured in absolute
+// tokens (not %) so it is immune to the window being re-resolved mid-session.
+const CTX_DROP_TOKENS = 30000;
+
+// On a fresh (startup/clear) session start, a ctx_bridge is only recovered if it was
+// written within this window — an unrelated older session's bridge never surfaces.
+const BRIDGE_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // claude CLI binary used by precompact for AI transcript extraction.
 // Override with MEMENTO_CLAUDE_BIN for testing or non-standard installs.
@@ -192,25 +214,84 @@ function getTurnSidecarPath(journalPath) {
   return journalPath.replace(/\.json$/, '.turn');
 }
 
-// Returns the path to the last-ctx-pct sidecar file.
-// Stores the ctx% from the previous turn as a plain float string.
+// Returns the path to the last-ctx sidecar file.
+// Stores the total context tokens from the previous turn as a plain integer string.
 // Written every turn by UserPromptSubmit. Used for compaction drop detection.
 function getLastCtxPath(journalPath) {
   return journalPath.replace(/\.json$/, '.last_ctx');
 }
 
-// Read the last persisted ctx% (float) or null if unavailable/invalid.
-function readLastCtxPct(lastCtxPath) {
+// Read the last persisted context-token total (integer) or null if unavailable/invalid.
+function readLastCtxTokens(lastCtxPath) {
   try {
-    const val = parseFloat(fs.readFileSync(lastCtxPath, 'utf8').trim());
+    const val = parseInt(fs.readFileSync(lastCtxPath, 'utf8').trim(), 10);
     return isNaN(val) ? null : val;
   } catch (e) { return null; }
 }
 
-// Persist the current ctx% for the next turn's drop detection.
+// Persist the current context-token total for the next turn's drop detection.
 // Same simple pattern as the turn sidecar (plain value, not security-critical).
-function writeLastCtxPct(lastCtxPath, pct) {
-  try { fs.writeFileSync(lastCtxPath, String(pct), { mode: 0o600 }); } catch (e) { /* silent */ }
+function writeLastCtxTokens(lastCtxPath, tokens) {
+  try { fs.writeFileSync(lastCtxPath, String(Math.round(tokens)), { mode: 0o600 }); } catch (e) { /* silent */ }
+}
+
+// ---------------------------------------------------------------------------
+// Context-window resolution (v0.8.0)
+// ---------------------------------------------------------------------------
+
+// Returns the path to the per-conversation context-window latch file.
+// Stores the resolved window (integer tokens) so a 1M detection, once made,
+// survives every later turn of the same conversation even after a compaction
+// drops usage back below the flip threshold.
+function getCtxWinPath(journalPath) {
+  return journalPath.replace(/\.json$/, '.ctxwin');
+}
+
+function readCtxWinLatch(ctxWinPath) {
+  try {
+    const val = parseInt(fs.readFileSync(ctxWinPath, 'utf8').trim(), 10);
+    return isNaN(val) ? null : val;
+  } catch (e) { return null; }
+}
+
+function writeCtxWinLatch(ctxWinPath, window) {
+  try { fs.writeFileSync(ctxWinPath, String(window), { mode: 0o600 }); } catch (e) { /* silent */ }
+}
+
+// Resolve the active context window (tokens) for this conversation.
+//
+// Resolution order:
+//   1. MEMENTO_CONTEXT_WINDOW_TOKENS env var — explicit operator knowledge, wins
+//      outright and disables detection.
+//   2. Per-conversation latch — if a prior turn already detected the large window,
+//      stay there (monotonic; never revert).
+//   3. Usage heuristic — observed total above WINDOW_FLIP_TOKENS can only happen on
+//      the large window; latch it for the rest of the conversation.
+//   4. Default 200k.
+//
+// ctxWinPath may be null (e.g. MEMENTO_PROJECT_HASH override with no journal path);
+// detection then runs without persistence, which is fine — it re-derives each turn.
+function resolveWindow(totalTokens, ctxWinPath) {
+  const env = parseInt(process.env.MEMENTO_CONTEXT_WINDOW_TOKENS || '', 10);
+  if (!isNaN(env) && env > 0) return env;
+
+  if (ctxWinPath) {
+    const latched = readCtxWinLatch(ctxWinPath);
+    if (latched && latched >= LARGE_CONTEXT_WINDOW) return LARGE_CONTEXT_WINDOW;
+  }
+
+  if (typeof totalTokens === 'number' && totalTokens > WINDOW_FLIP_TOKENS) {
+    if (ctxWinPath) writeCtxWinLatch(ctxWinPath, LARGE_CONTEXT_WINDOW);
+    return LARGE_CONTEXT_WINDOW;
+  }
+
+  return DEFAULT_CONTEXT_WINDOW;
+}
+
+// The compaction point for a given window — the bridge trigger is measured against
+// this, not the window edge, so runway is constant across window sizes.
+function compactionPointFor(window) {
+  return Math.floor(window * AUTO_COMPACT_FRACTION);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,23 +542,37 @@ function getFixedLastCtxPath(claudeDir, instanceTag) {
 //
 // Resolution order:
 //   1. MEMENTO_PROJECT_HASH env var — explicit override (test isolation + non-git contexts)
-//   2. Session anchor file (written by SessionStart or a prior T1 resolution)
-//   3. findLatestJsonl() — fresh scan (T1 case or rare SessionStart startup race)
+//   2. transcriptPath from the hook stdin payload — authoritative for the live session.
+//      Claude Code hands every hook the current session's transcript path; trusting it
+//      keeps context tracking anchored to the live conversation and refreshes a stale
+//      anchor from a prior session.
+//   3. Session anchor file (written by a prior hook this session)
+//   4. findLatestJsonl() — fresh scan (no stdin path and no anchor)
 //
-// Side effect: writes session anchor if resolving via fresh scan.
+// Side effect: writes/refreshes the session anchor whenever it resolves a JSONL path.
 // Returns { conversationHash, jsonlPath } — either may be null if no JSONL found.
-function resolveConversation(claudeDir, instanceTag) {
+function resolveConversation(claudeDir, instanceTag, transcriptPath) {
   // Test/override path: skip JSONL scan entirely
   const envHash = (process.env.MEMENTO_PROJECT_HASH || '').trim();
   if (envHash) return { conversationHash: envHash, jsonlPath: null };
 
   const anchorPath = getSessionAnchorPath(claudeDir, instanceTag);
 
-  // Fast path: anchor already written by SessionStart or a prior turn
+  // Authoritative path: the live transcript supplied on stdin. Trust it over any
+  // cached anchor and refresh the anchor when it has drifted.
+  if (typeof transcriptPath === 'string') {
+    const tp = transcriptPath.trim();
+    if (tp.endsWith('.jsonl')) {
+      if (readSessionAnchor(anchorPath) !== tp) writeSessionAnchor(anchorPath, tp);
+      return { conversationHash: getConversationHash(tp), jsonlPath: tp };
+    }
+  }
+
+  // Fast path: anchor already written by a hook earlier this session
   let jsonlPath = readSessionAnchor(anchorPath);
 
   if (!jsonlPath) {
-    // Anchor missing — scan for JSONL (T1 or SessionStart startup race)
+    // No stdin path and no anchor — scan for the latest JSONL
     jsonlPath = findLatestJsonl(claudeDir);
     if (jsonlPath) writeSessionAnchor(anchorPath, jsonlPath);
   }
@@ -565,8 +660,10 @@ function normalizeBridge(data) {
   b.err = typeof data.err === 'string'
     ? sanitizeLine(data.err.slice(0, MAX_BRIDGE_ERR_CHARS))
     : null;
-  b.pct = typeof data.pct === 'number' ? data.pct : null;
-  b.at  = typeof data.at === 'string' ? data.at : new Date().toISOString();
+  // `left` = tokens of runway remaining until the compaction point when the bridge
+  // was written (replaces the older percentage annotation). Floored at 0.
+  b.left = typeof data.left === 'number' ? Math.max(0, Math.round(data.left)) : null;
+  b.at   = typeof data.at === 'string' ? data.at : new Date().toISOString();
   return b;
 }
 
@@ -686,8 +783,13 @@ module.exports = {
   getJournalPath,
   getTurnSidecarPath,    // kept for backward compat (tests)
   getLastCtxPath,        // kept for backward compat (tests)
-  readLastCtxPct,
-  writeLastCtxPct,
+  readLastCtxTokens,
+  writeLastCtxTokens,
+  getCtxWinPath,
+  readCtxWinLatch,
+  writeCtxWinLatch,
+  resolveWindow,
+  compactionPointFor,
   sanitizeLine,
   readJournal,
   writeJournal,
@@ -701,10 +803,14 @@ module.exports = {
   MAX_WHY_CHARS,
   MAX_WHY_HISTORY,
   MAX_JOURNAL_BYTES,
-  CONTEXT_WINDOW,
-  BRIDGE_TRIGGER_PCT,
+  DEFAULT_CONTEXT_WINDOW,
+  LARGE_CONTEXT_WINDOW,
+  WINDOW_FLIP_TOKENS,
+  AUTO_COMPACT_FRACTION,
+  BRIDGE_TRIGGER_TOKENS,
   BRIDGE_SPIKE_TOKENS,
-  CTX_DROP_THRESHOLD,
+  CTX_DROP_TOKENS,
+  BRIDGE_MAX_AGE_MS,
   MAX_BRIDGE_NEXT_CHARS,
   MAX_BRIDGE_FILES,
   MAX_BRIDGE_FILE_CHARS,

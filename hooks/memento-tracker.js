@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.7.1)
+// memento — UserPromptSubmit hook (v0.8.0)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -25,18 +25,20 @@ const {
   getFixedTurnPath,
   getFixedLastCtxPath,
   resolveConversation,
-  readLastCtxPct,
-  writeLastCtxPct,
+  readLastCtxTokens,
+  writeLastCtxTokens,
   readJournal,
+  getCtxWinPath,
+  resolveWindow,
+  compactionPointFor,
   getCtxBridgePath,
   findLatestJsonl,
   readLastUsage,
   readCtxBridge,
   deleteCtxBridge,
-  CONTEXT_WINDOW,
-  BRIDGE_TRIGGER_PCT,
+  BRIDGE_TRIGGER_TOKENS,
   BRIDGE_SPIKE_TOKENS,
-  CTX_DROP_THRESHOLD,
+  CTX_DROP_TOKENS,
   WRITE_SCRIPT_PATH,
 } = require('./memento-config');
 
@@ -56,9 +58,17 @@ function run(rawInput) {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
 
-  // Resolve conversation identity. At T1, this also writes the session anchor
-  // if SessionStart didn't (rare startup race). At T2+, reads existing anchor.
-  const { conversationHash, jsonlPath } = resolveConversation(claudeDir, instanceTag);
+  // The live transcript path Claude Code hands every hook on stdin. Authoritative
+  // for the current session — keeps ctx tracking off any stale anchor (Defect 1).
+  let transcriptPath = null;
+  try {
+    const data = JSON.parse(rawInput);
+    if (data && typeof data.transcript_path === 'string') transcriptPath = data.transcript_path;
+  } catch (e) { /* no stdin / not JSON — fall back to anchor */ }
+
+  // Resolve conversation identity. The live transcript_path wins; at T1 this also
+  // (re)writes the session anchor. Falls back to anchor/scan when stdin lacks it.
+  const { conversationHash, jsonlPath } = resolveConversation(claudeDir, instanceTag, transcriptPath);
   const effectiveHash = conversationHash || getProjectHash();
   const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
 
@@ -84,35 +94,40 @@ function run(rawInput) {
   // Compute context usage from JSONL. Use anchored path when available; fall back to
   // scan when resolveConversation returned null jsonlPath (MEMENTO_PROJECT_HASH override).
   const ctxJsonlPath = jsonlPath || findLatestJsonl(claudeDir);
-  let usedPct = null, cacheWrite = 0;
+  const ctxWinPath   = getCtxWinPath(journalPath);
+  let total = null, cacheWrite = 0, tokensToCompaction = null, window = null;
   if (ctxJsonlPath) {
     const usage = readLastUsage(ctxJsonlPath);
     if (usage) {
-      const total = (usage.input_tokens || 0) +
-                    (usage.cache_read_input_tokens || 0) +
-                    (usage.cache_creation_input_tokens || 0);
-      usedPct    = total / CONTEXT_WINDOW * 100;
+      total = (usage.input_tokens || 0) +
+              (usage.cache_read_input_tokens || 0) +
+              (usage.cache_creation_input_tokens || 0);
       cacheWrite = usage.cache_creation_input_tokens || 0;
+      // Resolve the real window (env → per-conversation latch → 200k) and measure
+      // runway as absolute tokens to the compaction point — constant across windows.
+      window = resolveWindow(total, ctxWinPath);
+      tokensToCompaction = compactionPointFor(window) - total;
     }
   }
 
   const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
 
-  // Drop detection: a significant ctx% drop means a compaction just occurred.
-  // Primary: ctx% dropped ≥ CTX_DROP_THRESHOLD from last_ctx (normal per-turn tracking).
-  // Fallback: no last_ctx exists (first run post-install or last_ctx lost) — use bridge.pct
-  // as the reference. A ≥ CTX_DROP_THRESHOLD drop from bridge.pct to current ctx means
-  // compaction occurred between when the bridge was written and now.
-  // If bridge has no pct field, fall back to usedPct < BRIDGE_TRIGGER_PCT heuristic.
-  const lastCtxPct = readLastCtxPct(lastCtxPath);
+  // Drop detection: a real drop in total context tokens means a compaction just
+  // occurred (context only grows between turns otherwise). Measured in tokens, so a
+  // mid-session window re-resolution can never look like a compaction.
+  // Primary: total dropped ≥ CTX_DROP_TOKENS from last_ctx (normal per-turn tracking).
+  // Fallback: no last_ctx (first run post-install or it was lost) but a bridge exists —
+  // compare against the bridge's own write position (compaction point − bridge.left).
+  // If current usage is ≥ CTX_DROP_TOKENS below where the bridge was written, a
+  // compaction happened between then and now.
+  const lastTotal = readLastCtxTokens(lastCtxPath);
   const bridge = readCtxBridge(bridgePath);
   let ctxBridgeStr = '';
-  const compactionDetected = usedPct !== null && (() => {
-    if (lastCtxPct !== null) return (lastCtxPct - usedPct) >= CTX_DROP_THRESHOLD;
-    if (!bridge) return false;
-    // Fallback: compare against bridge's own pct (precise) or trigger threshold (coarse)
-    const refPct = typeof bridge.pct === 'number' ? bridge.pct : BRIDGE_TRIGGER_PCT;
-    return (refPct - usedPct) >= CTX_DROP_THRESHOLD;
+  const compactionDetected = total !== null && (() => {
+    if (lastTotal !== null) return (lastTotal - total) >= CTX_DROP_TOKENS;
+    if (!bridge || tokensToCompaction === null) return false;
+    const bridgeLeft = typeof bridge.left === 'number' ? bridge.left : 0;
+    return (tokensToCompaction - bridgeLeft) >= CTX_DROP_TOKENS;
   })();
   if (compactionDetected && bridge) {
     ctxBridgeStr = buildBridgeInjection(bridge) + '\n';
@@ -124,9 +139,12 @@ function run(rawInput) {
     try { return fs.lstatSync(bridgePath).isFile(); } catch (e) { return false; }
   })();
 
-  const shouldBridge = usedPct !== null && (
-    usedPct >= BRIDGE_TRIGGER_PCT ||
-    (cacheWrite > BRIDGE_SPIKE_TOKENS && usedPct > 60 && !bridgeExists)
+  // Bridge directive fires when runway to compaction is short, or a large cache-write
+  // spike lands while past the window midpoint (a sudden jump could reach compaction
+  // before the next turn). Both are absolute-token tests against the resolved window.
+  const shouldBridge = tokensToCompaction !== null && (
+    tokensToCompaction <= BRIDGE_TRIGGER_TOKENS ||
+    (cacheWrite > BRIDGE_SPIKE_TOKENS && total > window / 2 && !bridgeExists)
   );
 
   let prompt;
@@ -142,7 +160,7 @@ function run(rawInput) {
   }
 
   if (shouldBridge) {
-    prompt += '\n' + buildBridgeDirective(bridgePath, usedPct);
+    prompt += '\n' + buildBridgeDirective(bridgePath, tokensToCompaction);
   }
 
   process.stdout.write(JSON.stringify({
@@ -152,8 +170,8 @@ function run(rawInput) {
     },
   }));
 
-  // Persist current ctx% for next turn's drop detection
-  if (usedPct !== null) writeLastCtxPct(lastCtxPath, usedPct);
+  // Persist current context-token total for next turn's drop detection
+  if (total !== null) writeLastCtxTokens(lastCtxPath, total);
 
   process.exit(0);
 }
@@ -188,16 +206,26 @@ function buildTurn1Prompt(journalPath, why, when) {
 function buildBridgeInjection(bridge) {
   const filesStr = bridge.files && bridge.files.length > 0 ? bridge.files.join(', ') : '(none)';
   const errStr   = bridge.err ? ` | Error: ${bridge.err}` : '';
-  return `[CTX BRIDGE] Written at ${bridge.pct ?? '?'}% | Files: ${filesStr}\n` +
+  const runway   = formatBridgeRunway(bridge);
+  return `[CTX BRIDGE] Written ${runway} | Files: ${filesStr}\n` +
          `Prior session: "${bridge.next}"${errStr} - verify still relevant\n` +
          `Read the listed files before resuming work.`;
 }
 
-// [BRIDGE] directive — appended to prompt when context is ≥74% or cache-write spike detected
-function buildBridgeDirective(bridgePath, pct) {
-  return `[BRIDGE] context at ${pct.toFixed(1)}% — write ctx_bridge.json before next tool call. path: ${bridgePath}\n` +
+// Human-readable runway label for a bridge. Prefers the v0.8.0 `left` (tokens to
+// compaction); falls back to a pre-v0.8.0 `pct` bridge so an upgrade is seamless.
+function formatBridgeRunway(bridge) {
+  if (typeof bridge.left === 'number') return `~${Math.max(0, Math.round(bridge.left / 1000))}k tokens left`;
+  if (typeof bridge.pct === 'number')  return `at ${bridge.pct}%`;
+  return 'runway unknown';
+}
+
+// [BRIDGE] directive — appended when runway to compaction is short or a cache-write spike lands
+function buildBridgeDirective(bridgePath, tokensToCompaction) {
+  const left = Math.max(0, Math.round(tokensToCompaction));
+  return `[BRIDGE] ~${Math.round(left / 1000)}k tokens until compaction — write ctx_bridge.json before next tool call. path: ${bridgePath}\n` +
     `List files you are actively editing, your exact next step, current error or null. Full overwrite.\n` +
-    `{"files":["path1"],"next":"<exact next step>","err":null,"pct":${Math.round(pct)},"at":"<ISO>"}`;
+    `{"files":["path1"],"next":"<exact next step>","err":null,"left":${left},"at":"<ISO>"}`;
 }
 
 // Turn N: compressed single-line prompt (Variants 4/5/6 based on journal state)

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.7.0)
+// memento — PreCompact hook (v0.8.0)
 //
 // Runs before context compaction. Does two things:
 //
@@ -28,11 +28,13 @@ const {
   resolveConversation,
   readJournal,
   getCtxBridgePath,
+  getCtxWinPath,
+  resolveWindow,
+  compactionPointFor,
   findLatestJsonl,
   readLastUsage,
   readCtxBridge,
   writeCtxBridge,
-  CONTEXT_WINDOW,
   CLAUDE_BIN,
   WRITE_SCRIPT_PATH,
 } = require('./memento-config.js');
@@ -53,23 +55,27 @@ function main() {
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
 
-  // Resolve conversation identity from anchor (written at session start/T1)
-  const { conversationHash, jsonlPath: anchoredJsonl } = resolveConversation(claudeDir, instanceTag);
+  // Live transcript on stdin (stat-validated; falls back to latest scan).
+  const transcriptPath = resolveTranscript(rawInput, claudeDir);
+
+  // Resolve conversation identity from the live transcript (refreshes the anchor).
+  const { conversationHash, jsonlPath: anchoredJsonl } = resolveConversation(claudeDir, instanceTag, transcriptPath);
   const effectiveHash = conversationHash || getProjectHash();
   const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
   const journal       = readJournal(journalPath);
 
-  // Read current ctx% for pct field in bridge.
-  // Use anchored JSONL if available; fall back to fresh scan for precompact edge case.
-  const jsonlPath = anchoredJsonl || findLatestJsonl(claudeDir);
-  let usedPct = null;
+  // Compute runway (tokens to compaction) for the bridge's `left` annotation,
+  // against the per-conversation-resolved window (env → latch → 200k).
+  const jsonlPath = anchoredJsonl || transcriptPath || findLatestJsonl(claudeDir);
+  let left = null;
   if (jsonlPath) {
     const usage = readLastUsage(jsonlPath);
     if (usage) {
       const total = (usage.input_tokens || 0) +
                     (usage.cache_read_input_tokens || 0) +
                     (usage.cache_creation_input_tokens || 0);
-      usedPct = total / CONTEXT_WINDOW * 100;
+      const window = resolveWindow(total, getCtxWinPath(journalPath));
+      left = Math.max(0, compactionPointFor(window) - total);
     }
   }
 
@@ -81,15 +87,14 @@ function main() {
   // Here we only write if no bridge exists yet.
   const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
   if (!readCtxBridge(bridgePath)) {
-    const transcriptPath = resolveTranscript(rawInput, claudeDir);
-    const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, usedPct);
+    const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, left);
     if (!written && why) {
       // Fallback: minimal bridge from journal.why (no files, no err)
       writeCtxBridge(bridgePath, {
         files: [],
         next:  why,
         err:   null,
-        pct:   usedPct !== null ? Math.round(usedPct) : null,
+        left,
         at:    new Date().toISOString(),
       });
     }
@@ -133,7 +138,7 @@ function resolveTranscript(rawInput, claudeDir) {
 // Spawn `claude -p` with transcript tail piped to stdin.
 // Parse JSON output and write ctx_bridge.json.
 // Returns true on success, false on any failure (caller handles fallback).
-function tryWriteAiBridge(bridgePath, transcriptPath, usedPct) {
+function tryWriteAiBridge(bridgePath, transcriptPath, left) {
   try {
     // Read last 32KB of transcript
     const stat = fs.statSync(transcriptPath);
@@ -171,7 +176,7 @@ function tryWriteAiBridge(bridgePath, transcriptPath, usedPct) {
       files: Array.isArray(extracted.files) ? extracted.files : [],
       next:  extracted.next,
       err:   extracted.err || null,
-      pct:   usedPct !== null ? Math.round(usedPct) : null,
+      left,
       at:    new Date().toISOString(),
     });
     return true;

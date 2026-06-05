@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.7.1)
+// memento — SessionStart hook (v0.8.0)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -25,11 +25,13 @@ const {
   getClaudeDir,
   getJournalPath,
   getFixedTurnPath,
+  getFixedLastCtxPath,
   resolveConversation,
   readJournal,
   getCtxBridgePath,
   readCtxBridge,
   deleteCtxBridge,
+  BRIDGE_MAX_AGE_MS,
   WRITE_SCRIPT_PATH,
 } = require('./memento-config');
 
@@ -47,19 +49,21 @@ process.stdin.on('end', () => {
 
 function run(rawInput) {
   let source = 'startup';
+  let transcriptPath = null;
   try {
     const data = JSON.parse(rawInput);
     source = (data && data.source) ? String(data.source).toLowerCase() : 'startup';
+    if (data && typeof data.transcript_path === 'string') transcriptPath = data.transcript_path;
   } catch (e) { /* use defaults */ }
 
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
   const isRecovery  = (source === 'compact' || source === 'resume');
 
-  // Resolve conversation identity — write/update anchor for this session.
-  // JSONL is almost always present at SessionStart. Rare startup race handled
-  // in tracker.js (T1): anchor is written there if still missing.
-  const { conversationHash } = resolveConversation(claudeDir, instanceTag);
+  // Resolve conversation identity from the live transcript on stdin (authoritative),
+  // refreshing the session anchor so this and every later hook track the live
+  // conversation rather than a prior session's frozen transcript.
+  const { conversationHash } = resolveConversation(claudeDir, instanceTag, transcriptPath);
   const effectiveHash = conversationHash || getProjectHash();
 
   const journalPath = getJournalPath(claudeDir, instanceTag, effectiveHash);
@@ -73,12 +77,23 @@ function run(rawInput) {
     fs.writeFileSync(turnPath, isRecovery ? '1' : '0', { mode: 0o600 });
   } catch (e) { /* silent */ }
 
-  // Always consume bridge if present — file existence is the signal, not source.
+  // On a fresh (non-recovery) start, clear the last-ctx token total so the first
+  // UserPromptSubmit drop-detection cannot misfire against a prior session's value.
+  if (!isRecovery) {
+    try { fs.unlinkSync(getFixedLastCtxPath(claudeDir, instanceTag)); } catch (e) { /* silent */ }
+  }
+
+  // Bridge consumption is gated by source. A resume/compact reattaches to the same
+  // conversation, so its bridge is correct by construction. A fresh startup/clear
+  // only recovers a bridge written recently (BRIDGE_MAX_AGE_MS) — an unrelated older
+  // session's bridge never surfaces. The bridge is one-shot: deleted once read.
   const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
   const bridge     = readCtxBridge(bridgePath);
   let bridgeStr = '';
   if (bridge) {
-    bridgeStr = buildBridgeInjection(bridge) + '\n';
+    if (isRecovery || bridgeIsRecent(bridge)) {
+      bridgeStr = buildBridgeInjection(bridge) + '\n';
+    }
     deleteCtxBridge(bridgePath);
   }
 
@@ -96,9 +111,27 @@ function run(rawInput) {
 function buildBridgeInjection(bridge) {
   const filesStr = bridge.files && bridge.files.length > 0 ? bridge.files.join(', ') : '(none)';
   const errStr   = bridge.err ? ` | Error: ${bridge.err}` : '';
-  return `[CTX BRIDGE] Written at ${bridge.pct ?? '?'}% | Files: ${filesStr}\n` +
+  const runway   = formatBridgeRunway(bridge);
+  return `[CTX BRIDGE] Written ${runway} | Files: ${filesStr}\n` +
          `Prior session: "${bridge.next}"${errStr} - verify still relevant\n` +
          `Read the listed files before resuming work.`;
+}
+
+// Human-readable runway label. Prefers v0.8.0 `left` (tokens to compaction);
+// falls back to a pre-v0.8.0 `pct` bridge so an upgrade is seamless.
+function formatBridgeRunway(bridge) {
+  if (typeof bridge.left === 'number') return `~${Math.max(0, Math.round(bridge.left / 1000))}k tokens left`;
+  if (typeof bridge.pct === 'number')  return `at ${bridge.pct}%`;
+  return 'runway unknown';
+}
+
+// A bridge is recent if it was written within BRIDGE_MAX_AGE_MS. Unparseable or
+// missing timestamps are treated as not-recent (a fresh start won't surface them).
+function bridgeIsRecent(bridge) {
+  if (!bridge || typeof bridge.at !== 'string') return false;
+  const t = Date.parse(bridge.at);
+  if (isNaN(t)) return false;
+  return (Date.now() - t) <= BRIDGE_MAX_AGE_MS;
 }
 
 // Variant 8: Recovery — post-compaction session start

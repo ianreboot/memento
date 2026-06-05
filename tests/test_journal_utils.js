@@ -20,8 +20,13 @@ const {
   getJournalPath,
   getTurnSidecarPath,
   getLastCtxPath,
-  readLastCtxPct,
-  writeLastCtxPct,
+  readLastCtxTokens,
+  writeLastCtxTokens,
+  getCtxWinPath,
+  readCtxWinLatch,
+  writeCtxWinLatch,
+  resolveWindow,
+  compactionPointFor,
   sanitizeLine,
   readJournal,
   writeJournal,
@@ -35,7 +40,12 @@ const {
   MAX_WHY_HISTORY,
   MAX_BRIDGE_NEXT_CHARS,
   MAX_BRIDGE_FILES,
-  CTX_DROP_THRESHOLD,
+  DEFAULT_CONTEXT_WINDOW,
+  LARGE_CONTEXT_WINDOW,
+  WINDOW_FLIP_TOKENS,
+  AUTO_COMPACT_FRACTION,
+  BRIDGE_TRIGGER_TOKENS,
+  CTX_DROP_TOKENS,
 } = require('../hooks/memento-config.js');
 
 // Fix project hash for deterministic test paths
@@ -323,14 +333,14 @@ test('getCtxBridgePath returns {claudeDir}/.memento/ctx_bridge-{projectHash}.jso
 test('writeCtxBridge + readCtxBridge round-trip (valid data)', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
-  const data = { files: ['/foo.js', '/bar.js'], next: 'run tests', err: null, pct: 74, at: '2026-05-23T00:00:00Z' };
+  const data = { files: ['/foo.js', '/bar.js'], next: 'run tests', err: null, left: 40000, at: '2026-05-23T00:00:00Z' };
   writeCtxBridge(p, data);
   const result = readCtxBridge(p);
   assert.ok(result !== null, 'must read back written bridge');
   assert.deepStrictEqual(result.files, data.files);
   assert.strictEqual(result.next, data.next);
   assert.strictEqual(result.err, data.err);
-  assert.strictEqual(result.pct, data.pct);
+  assert.strictEqual(result.left, data.left);
 });
 
 test('readCtxBridge returns null for missing file', () => {
@@ -345,7 +355,7 @@ test('readCtxBridge returns null for symlink', () => {
   fs.mkdirSync(mementoDir, { recursive: true });
   const real = path.join(mementoDir, 'real.json');
   const link = path.join(mementoDir, 'ctx_bridge.json');
-  fs.writeFileSync(real, JSON.stringify({ files: [], next: 'ok', err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
+  fs.writeFileSync(real, JSON.stringify({ files: [], next: 'ok', err: null, left: 40000, at: '2026-05-23T00:00:00Z' }));
   try { fs.symlinkSync(real, link); } catch (e) { return; }
   assert.strictEqual(readCtxBridge(link), null, 'symlink must return null');
 });
@@ -363,7 +373,7 @@ test('readCtxBridge returns null if files field missing', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ next: 'ok', err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
+  fs.writeFileSync(p, JSON.stringify({ next: 'ok', err: null, left: 40000, at: '2026-05-23T00:00:00Z' }));
   assert.strictEqual(readCtxBridge(p), null, 'missing files field must return null');
 });
 
@@ -371,7 +381,7 @@ test('readCtxBridge returns null if next field missing', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ files: [], err: null, pct: 74, at: '2026-05-23T00:00:00Z' }));
+  fs.writeFileSync(p, JSON.stringify({ files: [], err: null, left: 40000, at: '2026-05-23T00:00:00Z' }));
   assert.strictEqual(readCtxBridge(p), null, 'missing next field must return null');
 });
 
@@ -379,27 +389,27 @@ test('readCtxBridge returns object without truncation (normalization is write-si
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
   const longNext = 'a'.repeat(500);
-  writeCtxBridge(p, { files: [], next: longNext, err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  writeCtxBridge(p, { files: [], next: longNext, err: null, left: 40000, at: '2026-05-23T00:00:00Z' });
   const result = readCtxBridge(p);
   // Write side truncates to MAX_BRIDGE_NEXT_CHARS — read side returns as-is
   assert.ok(result !== null);
   assert.strictEqual(result.next.length, MAX_BRIDGE_NEXT_CHARS, 'truncated at write time, not read time');
 });
 
-test('readCtxBridge returns object even without pct field (pct is optional)', () => {
+test('readCtxBridge returns object even without left field (left is optional)', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify({ files: ['/a.js'], next: 'resume', err: null, at: '2026-05-23T00:00:00Z' }));
   const result = readCtxBridge(p);
-  assert.ok(result !== null, 'bridge without pct field must still be valid');
-  assert.strictEqual(result.pct, undefined);
+  assert.ok(result !== null, 'bridge without left field must still be valid');
+  assert.strictEqual(result.left, undefined);
 });
 
 test('writeCtxBridge truncates next to MAX_BRIDGE_NEXT_CHARS at write time', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
-  writeCtxBridge(p, { files: [], next: 'x'.repeat(MAX_BRIDGE_NEXT_CHARS + 100), err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  writeCtxBridge(p, { files: [], next: 'x'.repeat(MAX_BRIDGE_NEXT_CHARS + 100), err: null, left: 40000, at: '2026-05-23T00:00:00Z' });
   const result = readCtxBridge(p);
   assert.ok(result !== null);
   assert.ok(result.next.length <= MAX_BRIDGE_NEXT_CHARS);
@@ -409,7 +419,7 @@ test('writeCtxBridge caps files to MAX_BRIDGE_FILES entries at write time', () =
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
   const files = ['/a.js', '/b.js', '/c.js', '/d.js', '/e.js', '/f.js', '/g.js'];
-  writeCtxBridge(p, { files, next: 'test', err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  writeCtxBridge(p, { files, next: 'test', err: null, left: 40000, at: '2026-05-23T00:00:00Z' });
   const result = readCtxBridge(p);
   assert.ok(result !== null);
   assert.ok(result.files.length <= MAX_BRIDGE_FILES);
@@ -418,7 +428,7 @@ test('writeCtxBridge caps files to MAX_BRIDGE_FILES entries at write time', () =
 test('deleteCtxBridge removes file, returns silently on missing', () => {
   const dir = tmpDir();
   const p = getCtxBridgePath(dir, 'testhash');
-  writeCtxBridge(p, { files: [], next: 'test', err: null, pct: 74, at: '2026-05-23T00:00:00Z' });
+  writeCtxBridge(p, { files: [], next: 'test', err: null, left: 40000, at: '2026-05-23T00:00:00Z' });
   assert.ok(fs.existsSync(p), 'file must exist before delete');
   deleteCtxBridge(p);
   assert.ok(!fs.existsSync(p), 'file must be gone after delete');
@@ -437,51 +447,111 @@ test('getLastCtxPath returns .last_ctx path alongside .json', () => {
   assert.strictEqual(getLastCtxPath(journalPath), '/some/dir/.memento/alice.last_ctx');
 });
 
-test('readLastCtxPct returns null for missing file', () => {
+test('readLastCtxTokens returns null for missing file', () => {
   const dir = tmpDir();
   const p = path.join(dir, 'missing.last_ctx');
-  assert.strictEqual(readLastCtxPct(p), null);
+  assert.strictEqual(readLastCtxTokens(p), null);
 });
 
-test('readLastCtxPct returns null for invalid content', () => {
+test('readLastCtxTokens returns null for invalid content', () => {
   const dir = tmpDir();
   const p = path.join(dir, 'bad.last_ctx');
   fs.writeFileSync(p, 'not a number');
-  assert.strictEqual(readLastCtxPct(p), null);
+  assert.strictEqual(readLastCtxTokens(p), null);
 });
 
-test('readLastCtxPct returns float from valid file', () => {
+test('readLastCtxTokens returns integer token total from valid file', () => {
   const dir = tmpDir();
   const p = path.join(dir, 'valid.last_ctx');
-  fs.writeFileSync(p, '78.5');
-  const val = readLastCtxPct(p);
+  fs.writeFileSync(p, '433483');
+  const val = readLastCtxTokens(p);
   assert.ok(val !== null, 'must return value');
-  assert.ok(Math.abs(val - 78.5) < 0.001, `expected 78.5, got ${val}`);
+  assert.strictEqual(val, 433483);
 });
 
-test('writeLastCtxPct + readLastCtxPct round-trip', () => {
+test('writeLastCtxTokens + readLastCtxTokens round-trip (rounds to integer)', () => {
   const dir = tmpDir();
   const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const p = getLastCtxPath(journalPath);
-  writeLastCtxPct(p, 65.3);
-  const val = readLastCtxPct(p);
+  writeLastCtxTokens(p, 128715.7);
+  const val = readLastCtxTokens(p);
   assert.ok(val !== null, 'must read back written value');
-  assert.ok(Math.abs(val - 65.3) < 0.001, `expected 65.3, got ${val}`);
+  assert.strictEqual(val, 128716);
 });
 
-test('writeLastCtxPct creates file with 0600 permissions', () => {
+test('writeLastCtxTokens creates file with 0600 permissions', () => {
   const dir = tmpDir();
   const journalPath = getJournalPath(dir, 'testuser', 'testhash');
   const p = getLastCtxPath(journalPath);
-  writeLastCtxPct(p, 42.0);
+  writeLastCtxTokens(p, 42000);
   const stat = fs.statSync(p);
   const mode = stat.mode & 0o777;
   assert.strictEqual(mode, 0o600, `permissions must be 0600, got 0${mode.toString(8)}`);
 });
 
-test('CTX_DROP_THRESHOLD is a number >= 10', () => {
-  assert.ok(typeof CTX_DROP_THRESHOLD === 'number', 'must be a number');
-  assert.ok(CTX_DROP_THRESHOLD >= 10, `must be >= 10, got ${CTX_DROP_THRESHOLD}`);
+test('CTX_DROP_TOKENS is a number >= 1000', () => {
+  assert.ok(typeof CTX_DROP_TOKENS === 'number', 'must be a number');
+  assert.ok(CTX_DROP_TOKENS >= 1000, `must be >= 1000, got ${CTX_DROP_TOKENS}`);
+});
+
+// ---------------------------------------------------------------------------
+// Context-window resolution (v0.8.0)
+// ---------------------------------------------------------------------------
+
+console.log('\ncontext-window resolution');
+
+test('getCtxWinPath returns .ctxwin path alongside .json', () => {
+  assert.strictEqual(getCtxWinPath('/d/.memento/alice.json'), '/d/.memento/alice.ctxwin');
+});
+
+test('resolveWindow defaults to 200k below the flip threshold', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'a.ctxwin');
+  assert.strictEqual(resolveWindow(150000, p), DEFAULT_CONTEXT_WINDOW);
+});
+
+test('resolveWindow flips to 1M once usage exceeds the flip threshold', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'b.ctxwin');
+  assert.strictEqual(resolveWindow(WINDOW_FLIP_TOKENS + 1, p), LARGE_CONTEXT_WINDOW);
+});
+
+test('resolveWindow latch is monotonic — stays 1M after a later low reading', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'c.ctxwin');
+  resolveWindow(WINDOW_FLIP_TOKENS + 50000, p);          // detect + latch 1M
+  assert.strictEqual(readCtxWinLatch(p), LARGE_CONTEXT_WINDOW, 'latch must persist');
+  // A later turn reading low (e.g. just after a compaction) must NOT revert to 200k
+  assert.strictEqual(resolveWindow(80000, p), LARGE_CONTEXT_WINDOW);
+});
+
+test('resolveWindow env override wins and disables detection', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'd.ctxwin');
+  process.env.MEMENTO_CONTEXT_WINDOW_TOKENS = '500000';
+  try {
+    assert.strictEqual(resolveWindow(10, p), 500000, 'env override must win');
+    assert.strictEqual(resolveWindow(WINDOW_FLIP_TOKENS + 1, p), 500000, 'override holds above flip');
+  } finally {
+    delete process.env.MEMENTO_CONTEXT_WINDOW_TOKENS;
+  }
+});
+
+test('resolveWindow tolerates a null ctxWinPath (no persistence)', () => {
+  assert.strictEqual(resolveWindow(50000, null), DEFAULT_CONTEXT_WINDOW);
+  assert.strictEqual(resolveWindow(WINDOW_FLIP_TOKENS + 1, null), LARGE_CONTEXT_WINDOW);
+});
+
+test('compactionPointFor scales with window via AUTO_COMPACT_FRACTION', () => {
+  assert.strictEqual(compactionPointFor(DEFAULT_CONTEXT_WINDOW), Math.floor(DEFAULT_CONTEXT_WINDOW * AUTO_COMPACT_FRACTION));
+  assert.strictEqual(compactionPointFor(LARGE_CONTEXT_WINDOW), Math.floor(LARGE_CONTEXT_WINDOW * AUTO_COMPACT_FRACTION));
+  // Runway (tokens to compaction) at equal usage is far larger on the 1M window
+  assert.ok(compactionPointFor(LARGE_CONTEXT_WINDOW) - 150000 > compactionPointFor(DEFAULT_CONTEXT_WINDOW) - 150000);
+});
+
+test('BRIDGE_TRIGGER_TOKENS is a sane runway margin (>= largest plausible turn growth)', () => {
+  assert.ok(typeof BRIDGE_TRIGGER_TOKENS === 'number');
+  assert.ok(BRIDGE_TRIGGER_TOKENS >= 30000, `expected >= 30000, got ${BRIDGE_TRIGGER_TOKENS}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -601,7 +671,7 @@ test('two sessions with different project hashes have isolated ctx_bridge paths'
   const bridgeB = getCtxBridgePath(dir, '11223344');
   assert.notStrictEqual(bridgeA, bridgeB, 'different project hashes must produce different bridge paths');
   // Write to A, verify B is unaffected
-  writeCtxBridge(bridgeA, { files: ['/foo.js'], next: 'session A', err: null, pct: 74, at: new Date().toISOString() });
+  writeCtxBridge(bridgeA, { files: ['/foo.js'], next: 'session A', err: null, left: 40000, at: new Date().toISOString() });
   assert.strictEqual(readCtxBridge(bridgeB), null, 'write to bridgeA must not affect bridgeB');
 });
 

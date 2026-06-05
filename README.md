@@ -82,7 +82,7 @@ Compaction happens / next session starts
 
 ## Context Bridge
 
-When the session approaches the compaction point, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{conversationHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
+When the session approaches the compaction point, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{projectHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take. The snapshot is keyed by project (not by conversation) so it carries across to the *next* session — a brand-new conversation that starts after the old one ends still picks it up.
 
 ```json
 {

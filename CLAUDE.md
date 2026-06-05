@@ -96,9 +96,11 @@ Session anchor: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.anchor` — stores a
 
 Turn sidecar: `$CLAUDE_CONFIG_DIR/.memento/<instance-tag>.turn` — plain integer, fixed per-instance path (no hash); reset each session by SessionStart hook.
 
-ctx_bridge: `$CLAUDE_CONFIG_DIR/.memento/ctx_bridge-<conversation-hash>.json` — per-conversation recovery snapshot.
+ctx_bridge: `$CLAUDE_CONFIG_DIR/.memento/ctx_bridge-<project-hash>.json` — project-scoped cross-conversation recovery snapshot.
 
-**Conversation hash**: 8-char SHA-1 of the active JSONL file path (unique per conversation, isolates parallel sessions on the same project). Override with `MEMENTO_PROJECT_HASH` env var for testing or non-git contexts. Falls back to `getProjectHash()` (SHA-1 of git root) when no JSONL is found.
+**Conversation hash** (journal scope): 8-char SHA-1 of the active JSONL file path (unique per conversation, isolates parallel sessions on the same project). Override with `MEMENTO_PROJECT_HASH` env var for testing or non-git contexts. Falls back to `getProjectHash()` (SHA-1 of git root) when no JSONL is found.
+
+**Project hash** (bridge scope): 8-char SHA-1 of the git root path (`getProjectHash()`), stable across conversations. The journal is conversation-scoped (per-conversation why-chains), but the ctx_bridge is **project-scoped** because its job is to hand recovery context from a finished conversation to the *next, different* one — which has a new conversation hash. Keying the bridge by conversation hash (v0.7.0–v0.8.0) made that handoff impossible on a fresh start; v0.8.1 restored project-scoping. Note `MEMENTO_PROJECT_HASH` overrides both, collapsing them — handy for tests, but it masks the distinction.
 
 **Schema validation**: `readJournal()` returns null for any journal without a `why` field (includes all pre-v0.4.0 journals). Null triggers a fresh-start prompt; Claude creates a new journal at the namespaced path.
 

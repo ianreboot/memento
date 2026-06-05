@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.1 — 2026-06-05
+
+Fixes a bug that silently disabled cross-session recovery. The context bridge is meant to hand recovery context from a finished conversation to the next one you start — but since v0.7.0 it was keyed by conversation, so a brand-new session looked for it under a key the previous session never wrote. A fresh start would report "No prior journal" even when the previous session had left clear intent. Resume and compaction within the same session were unaffected; only the cross-session handoff was broken.
+
+- **Fixed**: the `ctx_bridge` is now keyed by project (git root), not by conversation, so a new session reliably recovers the bridge written by the previous one. The journal stays conversation-scoped (each conversation keeps its own `why` history); only the bridge — whose entire purpose is to cross conversations — is project-scoped. This restores the v0.6.0 behavior that v0.7.0's conversation-anchoring work regressed. `MEMENTO_PROJECT_HASH` still overrides both keys for tests and non-git contexts.
+- **Tests**: added cross-session regression coverage that exercises a differing conversation hash and project hash (the prior suite set `MEMENTO_PROJECT_HASH`, which collapsed the two keys and hid the bug). Suite is 167 checks.
+
 ## v0.8.0 — 2026-06-05
 
 Context tracking is now anchored to the live session and aware of the real context window. Two improvements work together: the tracker reads the session's current transcript instead of a cached pointer, and the bridge trigger is measured in tokens of runway rather than a fixed percentage of an assumed window.

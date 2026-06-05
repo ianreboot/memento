@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — PreCompact hook (v0.8.0)
+// memento — PreCompact hook (v0.8.1)
 //
 // Runs before context compaction. Does two things:
 //

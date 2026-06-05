@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionEnd hook (v0.8.0)
+// memento — SessionEnd hook (v0.8.1)
 //
 // Runs when Claude Code session ends (clean exit, crash, or interrupt).
 // Writes a minimal ctx_bridge.json from journal.why so that on restart,

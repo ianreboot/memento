@@ -85,7 +85,10 @@ function main() {
   // Write ctx_bridge.json if not already written by tracker.
   // Tracker's bridge is richer (Claude knew which files it was editing).
   // Here we only write if no bridge exists yet.
-  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
+  //
+  // Project-scoped key (not conversation-scoped): the bridge must be readable by the
+  // NEXT conversation, which has a different conversation hash. See activate.js.
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
   if (!readCtxBridge(bridgePath)) {
     const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, left);
     if (!written && why) {

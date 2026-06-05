@@ -480,6 +480,92 @@ test('startup bridge: [CTX BRIDGE] appears before MANDATORY WRITE', () => {
 });
 
 // ---------------------------------------------------------------------------
+// memento-activate.js — cross-session bridge handoff (regression)
+//
+// The ctx_bridge is a CROSS-conversation handoff: the prior conversation writes it,
+// the next, DIFFERENT conversation must read it. v0.7.0–v0.8.0 keyed it by
+// conversationHash, so a fresh new conversation looked it up under a hash the prior
+// conversation never wrote — the handoff was structurally impossible. The bridge is
+// now PROJECT-scoped while the journal stays conversation-scoped.
+//
+// These tests deliberately do NOT set MEMENTO_PROJECT_HASH: that override collapses
+// conversationHash and projectHash to one value, which is exactly why the rest of the
+// suite never caught this bug. Here we let them differ (real-world condition).
+// ---------------------------------------------------------------------------
+
+console.log('\nmemento-activate.js (cross-session bridge handoff)');
+
+const mementoConfig = require(path.join(HOOKS_DIR, 'memento-config.js'));
+
+test('startup: fresh new-conversation activate picks up a project-scoped bridge from a prior conversation', () => {
+  const dir = tmpDir();
+
+  // projectHash is what getProjectHash() resolves to inside the hook subprocess
+  // (same cwd as this runner → same value). The prior conversation's bridge lives here.
+  const projectHash = mementoConfig.getProjectHash();
+
+  // The NEW session's live transcript → a DIFFERENT conversation hash.
+  const newTranscript = path.join(dir, 'new-conversation.jsonl');
+  const conversationHash = mementoConfig.getConversationHash(newTranscript);
+  assert.notStrictEqual(conversationHash, projectHash,
+    'precondition: conversation hash must differ from project hash (else the bug is masked)');
+
+  // Prior conversation left a recent, project-scoped bridge.
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const projectBridgePath = path.join(mementoDir, `ctx_bridge-${projectHash}.json`);
+  fs.writeFileSync(projectBridgePath, JSON.stringify({
+    files: ['/src/app.js'],
+    next:  'finish the cross-session handoff fix',
+    err:   null,
+    left:  40000,
+    at:    new Date().toISOString(),
+  }, null, 2));
+
+  const stdin = JSON.stringify({ source: 'startup', transcript_path: newTranscript });
+  const r = runHook('memento-activate.js', stdin, {
+    CLAUDE_CONFIG_DIR:    dir,
+    MEMENTO_PROJECT_HASH: '',   // disable override so the two hashes genuinely differ
+  });
+
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.stdout.includes('[CTX BRIDGE]'),
+    'fresh new-conversation startup must surface the prior conversation\'s project-scoped bridge');
+  assert.ok(r.stdout.includes('finish the cross-session handoff fix'),
+    'must show next from the project-scoped bridge');
+  assert.ok(!fs.existsSync(projectBridgePath),
+    'bridge must be deleted after pickup (one-shot)');
+});
+
+test('startup: a conversation-hash-keyed bridge is NOT consumed (regression guard for the old buggy key)', () => {
+  const dir = tmpDir();
+  const projectHash = mementoConfig.getProjectHash();
+  const newTranscript = path.join(dir, 'another-conversation.jsonl');
+  const conversationHash = mementoConfig.getConversationHash(newTranscript);
+  assert.notStrictEqual(conversationHash, projectHash, 'precondition: hashes differ');
+
+  // Write a bridge at the OLD (buggy) conversation-hash location.
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const convBridgePath = path.join(mementoDir, `ctx_bridge-${conversationHash}.json`);
+  fs.writeFileSync(convBridgePath, JSON.stringify({
+    files: [], next: 'should NOT be picked up', err: null,
+    left: 40000, at: new Date().toISOString(),
+  }, null, 2));
+
+  const stdin = JSON.stringify({ source: 'startup', transcript_path: newTranscript });
+  const r = runHook('memento-activate.js', stdin, {
+    CLAUDE_CONFIG_DIR:    dir,
+    MEMENTO_PROJECT_HASH: '',
+  });
+
+  assert.ok(!r.stdout.includes('[CTX BRIDGE]'),
+    'a conversation-hash-keyed file must not be consumed — the bridge is project-scoped now');
+  assert.ok(fs.existsSync(convBridgePath),
+    'the conversation-hash file is not the bridge path and must be left untouched');
+});
+
+// ---------------------------------------------------------------------------
 // memento-tracker.js — ctx_bridge directive
 // ---------------------------------------------------------------------------
 

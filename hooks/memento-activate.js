@@ -87,7 +87,14 @@ function run(rawInput) {
   // conversation, so its bridge is correct by construction. A fresh startup/clear
   // only recovers a bridge written recently (BRIDGE_MAX_AGE_MS) — an unrelated older
   // session's bridge never surfaces. The bridge is one-shot: deleted once read.
-  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
+  //
+  // The bridge is keyed by PROJECT hash, not conversation hash. Its whole purpose is
+  // to carry intent from a finished conversation into the next, DIFFERENT one — which
+  // has a new conversation hash. Keying it by conversation hash (as v0.7.0–v0.8.0 did)
+  // made the fresh-start handoff structurally impossible: the new session looked up a
+  // bridge under a hash the prior session never wrote. The journal stays
+  // conversation-scoped (per-conversation why-chains); the bridge is project-scoped.
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
   const bridge     = readCtxBridge(bridgePath);
   let bridgeStr = '';
   if (bridge) {

@@ -110,7 +110,11 @@ function run(rawInput) {
     }
   }
 
-  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
+  // Project-scoped bridge key (not conversation-scoped): the bridge is a cross-
+  // conversation handoff, so it must use a key stable across conversations. The same
+  // path serves in-session compaction re-injection (projectHash is stable within a
+  // session too) and the cross-session pickup in activate.js. See activate.js.
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
 
   // Drop detection: a real drop in total context tokens means a compaction just
   // occurred (context only grows between turns otherwise). Measured in tokens, so a

@@ -81,7 +81,10 @@ function main() {
 
   // Write minimal bridge only if none exists. Existing bridge (tracker near the
   // compaction point or PreCompact) is richer — preserve it.
-  const bridgePath = getCtxBridgePath(claudeDir, effectiveHash);
+  //
+  // Project-scoped key (not conversation-scoped): the bridge must be readable by the
+  // NEXT conversation, which has a different conversation hash. See activate.js.
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
   if (!readCtxBridge(bridgePath) && why) {
     writeCtxBridge(bridgePath, {
       files: [],

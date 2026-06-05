@@ -18,8 +18,8 @@ UserPromptSubmit hook
   └── memento-tracker.js
         reads turn sidecar → emits MANDATORY WRITE prompt (T1 full or T2+ compressed, invisible to user)
         increments turn sidecar
-        at ≥74% ctx: emits [BRIDGE] directive → Claude writes ctx_bridge.json
-        on ctx% drop ≥20pp: reads ctx_bridge.json → injects [CTX BRIDGE] block → deletes file
+        near compaction (short token runway): emits [BRIDGE] directive → Claude writes ctx_bridge.json
+        on context-token drop ≥30k: reads ctx_bridge.json → injects [CTX BRIDGE] block → deletes file
 
 PreCompact hook
   └── memento-precompact.js

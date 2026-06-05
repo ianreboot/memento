@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 — 2026-06-05
+
+Context tracking is now anchored to the live session and aware of the real context window. Two improvements work together: the tracker reads the session's current transcript instead of a cached pointer, and the bridge trigger is measured in tokens of runway rather than a fixed percentage of an assumed window.
+
+- **New**: context tracking anchors to the session's live transcript. Every hook receives the current `transcript_path` on stdin and uses it as the authoritative source, refreshing the per-instance anchor each session. Context usage, compaction detection, and bridge recovery now always reflect the active conversation rather than a previously cached transcript.
+- **Changed**: the context window is resolved per conversation instead of assuming 200,000 tokens. Once observed usage passes the 200k mark (impossible on a 200k window), memento treats the window as 1M for the rest of the conversation and latches that result so a later compaction cannot revert it. `MEMENTO_CONTEXT_WINDOW_TOKENS` still pins the window explicitly and now disables detection when set. No model list is required.
+- **Changed**: the `[BRIDGE]` directive fires on tokens of runway to the compaction point, not on a percentage of the window. A fixed percentage is a different real margin on a 200k window than on a 1M one; an absolute token margin gives the same warning distance on every window size, sized above the largest plausible single-turn growth. The cache-write spike guard is retained for sudden jumps.
+- **Changed**: compaction detection compares absolute context tokens between turns rather than percentages, so resolving a larger window mid-session can never be mistaken for a compaction.
+- **Changed**: on a fresh session start, a `ctx_bridge` is recovered only when it was written recently (within 6 hours). Resume and compact recovery are unchanged. This keeps an unrelated earlier session's bridge from surfacing in a new one.
+- **Changed**: the `ctx_bridge` annotation field is now `left` (tokens of runway remaining when written) in place of `pct`. Bridges written by an earlier version still display correctly on upgrade.
+- **New**: per-conversation `.ctxwin` sidecar persists the detected window; the `.last_ctx` sidecar now stores the absolute token total used for drop detection.
+
 ## v0.7.1 — 2026-05-26
 
 - **Fix**: ctx_bridge injection phrasing changed from `Next: "..."` to `Prior session: "..." - verify still relevant` in both `buildBridgeInjection()` functions (activate.js and tracker.js). The directive form caused prior-session context to persist as a standing instruction, overriding explicit user redirects in subsequent turns. The informational form signals provenance rather than a task queue entry.

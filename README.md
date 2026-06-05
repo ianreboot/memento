@@ -82,29 +82,31 @@ Compaction happens / next session starts
 
 ## Context Bridge
 
-When context usage reaches 74%, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{conversationHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
+When the session approaches the compaction point, memento automatically writes a pre-compaction snapshot called `ctx_bridge-{conversationHash}.json`. This captures structured recovery data — not just intent, but the specific files being edited and the exact next action to take.
 
 ```json
 {
   "files": ["src/auth.js", "tests/auth.test.js"],
   "next":  "fix the 401 on line 47, then run npm test",
   "err":   "TypeError: Cannot read property 'token' of undefined",
-  "pct":   76,
+  "left":  38000,
   "at":    "2026-05-23T14:30:00Z"
 }
 ```
 
+The trigger is measured in **tokens of runway left**, not a percentage. A fixed percentage is a different amount of real headroom on a 200k window than on a 1M one; an absolute token margin gives the same warning distance on any window size. The `left` field records how many tokens of runway remained when the bridge was written.
+
 **Three safety nets ensure the bridge is written before any session end:**
 
-1. **At 74% context:** UserPromptSubmit detects ≥74% usage and injects a `[BRIDGE]` directive — Claude writes the bridge with exact files, next step, and current error.
-2. **Before compaction:** PreCompact hook uses AI extraction from the session transcript to write the bridge, even if Claude missed the 74% directive.
+1. **Approaching compaction:** UserPromptSubmit injects a `[BRIDGE]` directive once the remaining runway is short — Claude writes the bridge with exact files, next step, and current error.
+2. **Before compaction:** PreCompact hook uses AI extraction from the session transcript to write the bridge, even if Claude missed the runway directive.
 3. **On clean exit:** SessionEnd hook writes a minimal bridge from the current journal intent — covering sessions that end without ever compacting.
 
-Only the richest available bridge is used. A bridge written at 74% by Claude is never overwritten by the hook fallbacks. On the next session start, the bridge is injected into recovery context and deleted.
+Only the richest available bridge is used. A bridge written by Claude is never overwritten by the hook fallbacks. On the next session start, the bridge is injected into recovery context and deleted.
+
+**Window-aware by default.** Memento detects a 1M-context session automatically: once observed usage passes the 200k mark — impossible on a 200k window — it treats the window as 1M for the rest of the conversation. No model list to maintain, and a 200k session behaves exactly as before. Set `MEMENTO_CONTEXT_WINDOW_TOKENS=<n>` to state the window explicitly and skip detection.
 
 **User-visible impact:** None. The bridge is written and consumed silently. On recovery, the extra `[CTX BRIDGE]` line appears in the injected context alongside the normal `why` arc.
-
-**Override:** Set `MEMENTO_CONTEXT_WINDOW_TOKENS=<n>` if your model has a different context window than the 200,000-token default.
 
 Nothing appears in your conversation. The journal is a background process. Journal writes appear as Bash tool calls in your tool stream — visible confirmation that memento is saving your work, not conversation content.
 
@@ -120,10 +122,10 @@ MANDATORY WRITE — Why are we doing this? Confirm or update why (purpose, not a
 node ~/.claude/hooks/memento-write-why.js '<your why>'
 ```
 
-When a ctx_bridge was written (74%+ or session end), the recovery includes a second block with structured resumption state:
+When a ctx_bridge was written (near compaction or at session end), the recovery includes a second block with structured resumption state:
 
 ```
-[CTX BRIDGE] Written at 76% | Files: src/auth.js, tests/auth.test.js
+[CTX BRIDGE] Written ~38k tokens left | Files: src/auth.js, tests/auth.test.js
 Prior session: "fix the 401 on line 47, then run npm test" - verify still relevant
 Read the listed files before resuming work.
 
@@ -269,7 +271,7 @@ All settings are optional. Memento works out of the box with no configuration.
 | `MEMENTO_PROJECT_HASH` | SHA-1 of active JSONL path | Override conversation hash for testing or non-git contexts. 8-char hex string. When set, `resolveConversation()` returns it directly without scanning for a JSONL file. |
 | `MEMENTO_MAX_FILE_KB` | `6` | Journal file size cap in KB |
 | `MEMENTO_DEBUG` | (unset) | Set to `1` to enable a shadow debug journal at `~/.claude/.memento/<tag>-<hash>.debug.json` |
-| `MEMENTO_CONTEXT_WINDOW_TOKENS` | `200000` | Override context window size for the 74% bridge threshold — use if your model has a different context window |
+| `MEMENTO_CONTEXT_WINDOW_TOKENS` | auto-detected (`200000` base, `1000000` detected from usage) | State the context window size explicitly and skip auto-detection — useful to pin 1M from the first turn, or for a non-standard window |
 | `MEMENTO_CLAUDE_BIN` | `claude` | Override the `claude` binary path used for transcript extraction in the PreCompact hook (useful for testing) |
 
 Note: `MEMENTO_MAX_ENTRIES` and `MEMENTO_STALE_DAYS` were removed in v0.4.0 — the intent journal has no rolling window.

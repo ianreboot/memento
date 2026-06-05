@@ -32,6 +32,9 @@ const {
   readLastUsage,
   readCtxBridge,
   writeCtxBridge,
+  getLastWhyPath,
+  readLastWhy,
+  BRIDGE_MAX_AGE_MS,
 } = require('./memento-config.js');
 
 let rawInput = '';
@@ -78,21 +81,35 @@ function main() {
     }
   }
 
-  const why = journal && typeof journal.why === 'string' ? journal.why : null;
+  let why = journal && typeof journal.why === 'string' ? journal.why : null;
+
+  // Project-scoped key (not conversation-scoped): the bridge must be readable by the
+  // NEXT conversation, which has a different conversation hash. See activate.js.
+  const projectHash = getProjectHash(projectTranscript);
+
+  // Fallback: if the live-transcript journal has no why, recover it from the project-scoped
+  // last_why mirror that write-why maintains. write-why (a CLI call with no transcript_path)
+  // can file the why under a different conversation hash than this hook reads; sourcing from
+  // a project-scoped record sidesteps that divergence (writer and reader agree on project).
+  // Without this, that divergence silently produces no bridge at all.
+  let bridgeAt = null;
+  if (!why) {
+    const lw = readLastWhy(getLastWhyPath(claudeDir, projectHash), BRIDGE_MAX_AGE_MS);
+    if (lw) { why = lw.why; bridgeAt = lw.at; }
+  }
 
   // Write minimal bridge only if none exists. Existing bridge (tracker near the
   // compaction point or PreCompact) is richer — preserve it.
-  //
-  // Project-scoped key (not conversation-scoped): the bridge must be readable by the
-  // NEXT conversation, which has a different conversation hash. See activate.js.
-  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash(projectTranscript));
+  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
   if (!readCtxBridge(bridgePath) && why) {
     writeCtxBridge(bridgePath, {
       files: [],
       next:  why,
       err:   null,
       left,
-      at:    new Date().toISOString(),
+      // When recovered from last_why, carry its real timestamp so the fresh-start recency
+      // gate in activate.js reflects the intent's true age, not the bridge write time.
+      at:    bridgeAt || new Date().toISOString(),
     });
   }
 

@@ -34,6 +34,9 @@ const {
   writeCtxBridge,
   readCtxBridge,
   deleteCtxBridge,
+  getLastWhyPath,
+  writeLastWhy,
+  readLastWhy,
   readLastUsage,
   findLatestJsonl,
   MAX_WHY_CHARS,
@@ -820,6 +823,102 @@ test('subsequent call reads anchor (no re-scan)', () => {
   const { conversationHash: h2 } = resolveConversation(dir, 'testuser');
   process.env.MEMENTO_PROJECT_HASH = 'testhash'; // restore
   assert.strictEqual(h1, h2, 'both calls must return same hash');
+});
+
+// ---------------------------------------------------------------------------
+// last_why (project-scoped bridge fallback source)
+// ---------------------------------------------------------------------------
+
+console.log('\nlast_why');
+
+const SIX_H = 6 * 60 * 60 * 1000;
+
+test('getLastWhyPath is project-scoped (keyed by projectHash, not conversation hash)', () => {
+  const dir = tmpDir();
+  const pA = getLastWhyPath(dir, 'projA');
+  const pB = getLastWhyPath(dir, 'projB');
+  assert.ok(pA.endsWith('last_why-projA.json'), 'must encode the project hash');
+  assert.notStrictEqual(pA, pB, 'different projects must use different files');
+});
+
+test('write then read round-trips the why', () => {
+  const dir = tmpDir();
+  const p = getLastWhyPath(dir, 'projA');
+  writeLastWhy(p, 'current project intent');
+  const r = readLastWhy(p, SIX_H);
+  assert.ok(r && r.why === 'current project intent', 'must round-trip the why');
+  assert.ok(typeof r.at === 'string' && !isNaN(Date.parse(r.at)), 'must carry a valid ISO at');
+});
+
+test('read returns null beyond maxAgeMs (recency-bounded)', () => {
+  const dir = tmpDir();
+  const p = getLastWhyPath(dir, 'projA');
+  writeLastWhy(p, 'stale intent');
+  // Backdate the stored at to 7h ago by rewriting the file content directly.
+  const sevenHAgo = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(p, JSON.stringify({ why: 'stale intent', at: sevenHAgo }));
+  assert.strictEqual(readLastWhy(p, SIX_H), null, 'must reject intent older than the window');
+});
+
+test('read FAILS CLOSED on invalid maxAgeMs (0 / undefined reject everything)', () => {
+  const dir = tmpDir();
+  const p = getLastWhyPath(dir, 'projA');
+  writeLastWhy(p, 'recent intent');
+  assert.strictEqual(readLastWhy(p, 0), null, '0 must reject (not disable the guard)');
+  assert.strictEqual(readLastWhy(p, undefined), null, 'undefined must reject');
+  assert.strictEqual(readLastWhy(p, -5), null, 'negative must reject');
+  assert.ok(readLastWhy(p, SIX_H), 'valid window still returns it');
+});
+
+test('read returns null for missing / junk / no-why files', () => {
+  const dir = tmpDir();
+  assert.strictEqual(readLastWhy(getLastWhyPath(dir, 'none'), SIX_H), null, 'missing file → null');
+  const junk = getLastWhyPath(dir, 'junk');
+  fs.writeFileSync(junk, 'not json');
+  assert.strictEqual(readLastWhy(junk, SIX_H), null, 'junk → null');
+  const nowhy = getLastWhyPath(dir, 'nowhy');
+  fs.writeFileSync(nowhy, JSON.stringify({ at: new Date().toISOString() }));
+  assert.strictEqual(readLastWhy(nowhy, SIX_H), null, 'no why field → null');
+});
+
+test('write refuses a symlink at the target path (symlink-safe)', () => {
+  const dir = tmpDir();
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const real = path.join(mementoDir, 'real-target.json');
+  fs.writeFileSync(real, JSON.stringify({ why: 'original', at: new Date().toISOString() }));
+  const p = getLastWhyPath(dir, 'symlinked');
+  fs.symlinkSync(real, p);
+  writeLastWhy(p, 'attempted overwrite');
+  const realContent = JSON.parse(fs.readFileSync(real, 'utf8'));
+  assert.strictEqual(realContent.why, 'original', 'must not write through a symlink');
+});
+
+test('read refuses a symlink at the target path (symlink-safe)', () => {
+  const dir = tmpDir();
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const real = path.join(mementoDir, 'real-src.json');
+  fs.writeFileSync(real, JSON.stringify({ why: 'secret', at: new Date().toISOString() }));
+  const p = getLastWhyPath(dir, 'symlinked2');
+  fs.symlinkSync(real, p);
+  assert.strictEqual(readLastWhy(p, SIX_H), null, 'must not read through a symlink');
+});
+
+test('write is a no-op for empty / non-string why', () => {
+  const dir = tmpDir();
+  const p = getLastWhyPath(dir, 'projA');
+  writeLastWhy(p, '');
+  writeLastWhy(p, null);
+  assert.strictEqual(readLastWhy(p, SIX_H), null, 'no file written for empty/null why');
+});
+
+test('write truncates why to MAX_WHY_CHARS', () => {
+  const dir = tmpDir();
+  const p = getLastWhyPath(dir, 'projA');
+  writeLastWhy(p, 'x'.repeat(500));
+  const r = readLastWhy(p, SIX_H);
+  assert.ok(r && r.why.length === 200, 'why must be capped at 200 chars');
 });
 
 // ---------------------------------------------------------------------------

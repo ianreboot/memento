@@ -21,6 +21,8 @@ const {
   resolveConversation,
   readJournal,
   writeJournal,
+  getLastWhyPath,
+  writeLastWhy,
 } = require('./memento-config');
 
 try {
@@ -29,7 +31,7 @@ try {
 
   const claudeDir   = getClaudeDir();
   const instanceTag = getInstanceTag();
-  const { conversationHash } = resolveConversation(claudeDir, instanceTag);
+  const { conversationHash, jsonlPath } = resolveConversation(claudeDir, instanceTag);
   const effectiveHash = conversationHash || getProjectHash();
   const journalPath = getJournalPath(claudeDir, instanceTag, effectiveHash);
 
@@ -50,6 +52,16 @@ try {
     when:        new Date().toISOString(),
     why_history: history,
   });
+
+  // Mirror the why into a project-scoped record so the ctx_bridge can recover the latest
+  // intent even when this journal's conversation hash diverges from what the lifecycle hooks
+  // resolve (the silent cross-restart failure). Keyed by the same slug-derived projectHash
+  // the bridge uses, so writer and reader agree on project regardless of conversation drift.
+  // See last_why in memento-config.js. Best-effort — never blocks the journal write.
+  try {
+    const projectHash = getProjectHash(jsonlPath);
+    writeLastWhy(getLastWhyPath(claudeDir, projectHash), newWhy);
+  } catch (e) { /* silent */ }
 
   process.exit(0);
 } catch (e) {

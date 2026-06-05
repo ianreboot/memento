@@ -11,6 +11,10 @@ const { spawnSync } = require('child_process');
 
 const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
 
+// Conversation / project hashing — used by the real-divergence tests to assert the
+// precondition (writer and reader resolve DIFFERENT conversation hashes) without faking it.
+const { getConversationHash, getProjectHash } = require(path.join(HOOKS_DIR, 'memento-config.js'));
+
 let passed = 0;
 let failed = 0;
 
@@ -1113,6 +1117,146 @@ test('sessionend: no stdout output (session is ending, nothing to inject)', () =
   writeV4Journal(dir, { why: 'finalizing deploy' });
   const r = runHook('memento-sessionend.js', '{}', { CLAUDE_CONFIG_DIR: dir });
   assert.strictEqual(r.stdout, '', 'sessionend must produce no stdout output');
+});
+
+// ---------------------------------------------------------------------------
+// REAL cross-session divergence — the actual bug, driven through real code
+//
+// These do NOT set MEMENTO_PROJECT_HASH (which collapses conversation + project hashes and
+// is exactly why the suite missed this twice). Instead they lay down a real stale anchor and
+// real transcript files so write-why (CLI, anchor-resolved) and the lifecycle hooks
+// (transcript_path-resolved) genuinely compute DIFFERENT conversation hashes — then assert
+// the project-scoped last_why fallback still produces a bridge. Each test asserts the
+// divergence PRECONDITION so it can't silently degrade into a hashes-agree no-op, and the
+// full chain goes red if the fix is reverted.
+// ---------------------------------------------------------------------------
+
+console.log('\nreal cross-session divergence (no hash collapse)');
+
+// Run a hook/script with REAL resolution: MEMENTO_PROJECT_HASH disabled so anchor- and
+// transcript-based resolution actually drive the conversation hash.
+function runReal(scriptName, extraArgs, input, dir, extraEnv = {}) {
+  return spawnSync('node', [path.join(HOOKS_DIR, scriptName), ...extraArgs], {
+    input,
+    encoding: 'utf8',
+    env: Object.assign({}, process.env, {
+      MEMENTO_DEBUG: '',
+      MEMENTO_INSTANCE_TAG: 'testuser',
+      MEMENTO_PROJECT_HASH: '',           // <-- the key difference: do not collapse the hashes
+      CLAUDE_CONFIG_DIR: dir,
+    }, extraEnv),
+    timeout: 5000,
+  });
+}
+
+function makeTranscript(dir, slug, name) {
+  const d = path.join(dir, 'projects', slug);
+  fs.mkdirSync(d, { recursive: true });
+  const p = path.join(d, name);
+  fs.writeFileSync(p, '{"type":"x"}\n');
+  return p;
+}
+
+function setAnchor(dir, jsonlPath) {
+  const m = path.join(dir, '.memento');
+  fs.mkdirSync(m, { recursive: true });
+  fs.writeFileSync(path.join(m, 'testuser.anchor'), jsonlPath);
+}
+
+test('precondition: anchor vs transcript yield DIFFERENT conversation hashes, SAME project hash', () => {
+  const dir = tmpDir();
+  const OLD = makeTranscript(dir, '-home-acme', 'old-convo.jsonl');
+  const NEW = makeTranscript(dir, '-home-acme', 'new-convo.jsonl');
+  assert.notStrictEqual(getConversationHash(OLD), getConversationHash(NEW), 'conv hashes MUST diverge (else the bug cannot occur)');
+  assert.strictEqual(getProjectHash(OLD), getProjectHash(NEW), 'same slug MUST give same projectHash (the property the fix relies on)');
+});
+
+test('FULL CHAIN: write-why(anchor) → SessionEnd(transcript) → fresh SessionStart surfaces [CTX BRIDGE]', () => {
+  const dir = tmpDir();
+  const OLD = makeTranscript(dir, '-home-acme', 'old-convo.jsonl');
+  const NEW = makeTranscript(dir, '-home-acme', 'new-convo.jsonl');
+  setAnchor(dir, OLD); // stale anchor: write-why will resolve OLD, not the live transcript
+
+  // 1) write-why as the real CLI (no stdin/transcript) → journal under hash(OLD) = the misfile
+  const w = runReal('memento-write-why.js', ['shipping the real divergence fix'], '', dir);
+  assert.strictEqual(w.status, 0, `write-why must exit 0; stderr: ${w.stderr}`);
+  assert.ok(fs.existsSync(path.join(dir, '.memento', `testuser-${getConversationHash(OLD)}.json`)), 'journal filed under hash(OLD)');
+  assert.ok(!fs.existsSync(path.join(dir, '.memento', `testuser-${getConversationHash(NEW)}.json`)), 'nothing under hash(NEW) — the divergence is real');
+  assert.ok(fs.existsSync(path.join(dir, '.memento', `last_why-${getProjectHash(OLD)}.json`)), 'last_why mirror written under projectHash');
+
+  // 2) SessionEnd with the LIVE transcript NEW → live journal empty → MUST fall back to last_why
+  const se = runReal('memento-sessionend.js', [], JSON.stringify({ transcript_path: NEW, reason: 'exit' }), dir);
+  assert.strictEqual(se.status, 0);
+  const bridgePath = path.join(dir, '.memento', `ctx_bridge-${getProjectHash(NEW)}.json`);
+  assert.ok(fs.existsSync(bridgePath), 'bridge MUST be written despite the conversation-hash divergence (red if fix reverted)');
+  assert.strictEqual(JSON.parse(fs.readFileSync(bridgePath, 'utf8')).next, 'shipping the real divergence fix');
+
+  // 3) fresh SessionStart on a THIRD (new) conversation → surfaces and consumes the bridge
+  const THIRD = makeTranscript(dir, '-home-acme', 'third-convo.jsonl');
+  const as = runReal('memento-activate.js', [], JSON.stringify({ source: 'startup', transcript_path: THIRD }), dir);
+  assert.strictEqual(as.status, 0);
+  assert.ok(as.stdout.includes('[CTX BRIDGE]'), 'restart MUST surface [CTX BRIDGE]');
+  assert.ok(as.stdout.includes('shipping the real divergence fix'), 'with the recovered intent');
+  assert.ok(!fs.existsSync(bridgePath), 'bridge is one-shot — consumed after read');
+});
+
+test('FULL CHAIN via PreCompact: AI extraction fails → minimal fallback uses last_why', () => {
+  const dir = tmpDir();
+  const OLD = makeTranscript(dir, '-home-acme', 'old-convo.jsonl');
+  const NEW = makeTranscript(dir, '-home-acme', 'new-convo.jsonl');
+  setAnchor(dir, OLD);
+  runReal('memento-write-why.js', ['precompact divergence intent'], '', dir);
+
+  // Fake claude that FAILS so tryWriteAiBridge returns false → minimal (last_why) fallback runs.
+  const failClaude = writeFakeClaude(dir, 'boom', { exitCode: 1 });
+  const pc = runReal('memento-precompact.js', [], JSON.stringify({ transcript_path: NEW }), dir, { MEMENTO_CLAUDE_BIN: failClaude });
+  assert.strictEqual(pc.status, 0);
+  const bridgePath = path.join(dir, '.memento', `ctx_bridge-${getProjectHash(NEW)}.json`);
+  assert.ok(fs.existsSync(bridgePath), 'precompact must write minimal bridge from last_why on AI failure');
+  assert.strictEqual(JSON.parse(fs.readFileSync(bridgePath, 'utf8')).next, 'precompact divergence intent');
+});
+
+test('CROSS-PROJECT SAFETY: project A intent never leaks into project B bridge', () => {
+  const dir = tmpDir();
+  const A_OLD = makeTranscript(dir, '-home-projA', 'a-old.jsonl');
+  const B_NEW = makeTranscript(dir, '-home-projB', 'b-new.jsonl');
+  assert.notStrictEqual(getProjectHash(A_OLD), getProjectHash(B_NEW), 'precondition: genuinely different projects');
+  setAnchor(dir, A_OLD);
+  runReal('memento-write-why.js', ['project A private intent'], '', dir); // writes last_why for project A
+
+  // SessionEnd for project B (different slug) with an empty live journal
+  const se = runReal('memento-sessionend.js', [], JSON.stringify({ transcript_path: B_NEW }), dir);
+  assert.strictEqual(se.status, 0);
+  const bBridge = path.join(dir, '.memento', `ctx_bridge-${getProjectHash(B_NEW)}.json`);
+  assert.ok(!fs.existsSync(bBridge), 'project B MUST NOT get a bridge sourced from project A intent');
+  // and project A's own last_why is intact / correctly scoped
+  assert.ok(fs.existsSync(path.join(dir, '.memento', `last_why-${getProjectHash(A_OLD)}.json`)), 'A last_why exists under A projectHash');
+});
+
+test('RECENCY: SessionEnd fallback ignores a last_why older than the bridge window', () => {
+  const dir = tmpDir();
+  const NEW = makeTranscript(dir, '-home-acme', 'new.jsonl');
+  // Plant an 8h-old last_why directly under the project hash.
+  const lw = path.join(dir, '.memento', `last_why-${getProjectHash(NEW)}.json`);
+  fs.mkdirSync(path.dirname(lw), { recursive: true });
+  fs.writeFileSync(lw, JSON.stringify({ why: 'ancient intent', at: new Date(Date.now() - 8 * 3600 * 1000).toISOString() }));
+
+  const se = runReal('memento-sessionend.js', [], JSON.stringify({ transcript_path: NEW }), dir);
+  assert.strictEqual(se.status, 0);
+  assert.ok(!fs.existsSync(path.join(dir, '.memento', `ctx_bridge-${getProjectHash(NEW)}.json`)), 'stale last_why must not produce a bridge');
+});
+
+test('NON-DIVERGENT control: when write-why and the hook agree on hash, normal journal path still works', () => {
+  const dir = tmpDir();
+  const LIVE = makeTranscript(dir, '-home-acme', 'live.jsonl');
+  setAnchor(dir, LIVE);                          // anchor == live transcript → NO divergence
+  runReal('memento-write-why.js', ['normal-path intent'], '', dir);
+  // journal landed under the LIVE hash (same one SessionEnd will read) → no fallback needed
+  assert.ok(fs.existsSync(path.join(dir, '.memento', `testuser-${getConversationHash(LIVE)}.json`)), 'journal under live hash');
+  const se = runReal('memento-sessionend.js', [], JSON.stringify({ transcript_path: LIVE }), dir);
+  assert.strictEqual(se.status, 0);
+  const bridge = JSON.parse(fs.readFileSync(path.join(dir, '.memento', `ctx_bridge-${getProjectHash(LIVE)}.json`), 'utf8'));
+  assert.strictEqual(bridge.next, 'normal-path intent', 'normal (non-divergent) path must still bridge from the live journal');
 });
 
 // ---------------------------------------------------------------------------

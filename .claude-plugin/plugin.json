@@ -1,6 +1,6 @@
 {
   "name": "memento",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Preserves intent across context compaction — the why behind your work, not just the what. Mandatory per-turn writes ensure Claude always has current intent before responding. Injected automatically at session start; invisible to user.",
   "author": {
     "name": "ianreboot",

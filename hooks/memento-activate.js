@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.8.2)
+// memento — SessionStart hook (v0.8.3)
 //
 // Runs once per session start (including after compaction and on resume).
 //

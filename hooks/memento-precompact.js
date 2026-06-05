@@ -35,6 +35,9 @@ const {
   readLastUsage,
   readCtxBridge,
   writeCtxBridge,
+  getLastWhyPath,
+  readLastWhy,
+  BRIDGE_MAX_AGE_MS,
   CLAUDE_BIN,
   WRITE_SCRIPT_PATH,
 } = require('./memento-config.js');
@@ -89,17 +92,31 @@ function main() {
   //
   // Project-scoped key (not conversation-scoped): the bridge must be readable by the
   // NEXT conversation, which has a different conversation hash. See activate.js.
-  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash(projectTranscript));
+  const projectHash = getProjectHash(projectTranscript);
+
+  // Bridge source falls back to the project-scoped last_why mirror when the live-transcript
+  // journal has no why — write-why (CLI, no transcript_path) can file the journal under a
+  // different conversation hash than this hook reads; a project-scoped record sidesteps that.
+  // See activate.js / last_why. The AI-extracted bridge is preferred when available; this
+  // only backstops the minimal fallback path.
+  let bridgeWhy = why;
+  let bridgeAt = null;
+  if (!bridgeWhy) {
+    const lw = readLastWhy(getLastWhyPath(claudeDir, projectHash), BRIDGE_MAX_AGE_MS);
+    if (lw) { bridgeWhy = lw.why; bridgeAt = lw.at; }
+  }
+
+  const bridgePath = getCtxBridgePath(claudeDir, projectHash);
   if (!readCtxBridge(bridgePath)) {
     const written = transcriptPath && tryWriteAiBridge(bridgePath, transcriptPath, left);
-    if (!written && why) {
+    if (!written && bridgeWhy) {
       // Fallback: minimal bridge from journal.why (no files, no err)
       writeCtxBridge(bridgePath, {
         files: [],
-        next:  why,
+        next:  bridgeWhy,
         err:   null,
         left,
-        at:    new Date().toISOString(),
+        at:    bridgeAt || new Date().toISOString(),
       });
     }
   }

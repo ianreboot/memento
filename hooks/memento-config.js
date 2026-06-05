@@ -800,6 +800,127 @@ function deleteCtxBridge(bridgePath) {
 }
 
 // ---------------------------------------------------------------------------
+// last_why — project-scoped "latest intent" mirror (ctx_bridge fallback source)
+// ---------------------------------------------------------------------------
+//
+// write-why maintains this project-scoped record of the latest `why` on every write.
+// Its sole purpose is to decouple the ctx_bridge's SOURCE from conversation-hash resolution.
+//
+// The defect it closes: write-why is a plain CLI call with no hook stdin, so it resolves the
+// JOURNAL (conversation-scoped) via the per-instance anchor, while SessionEnd/PreCompact
+// resolve it via the authoritative transcript_path. When those conversation hashes diverge
+// (a stale anchor, an upgrade boundary, a sibling session), write-why writes the why under
+// conversation hash A while the bridge writer reads hash B, finds nothing, and writes no
+// bridge — a silent cross-restart failure.
+//
+// The ctx_bridge is already PROJECT-scoped (keyed by the stable slug-derived projectHash).
+// Sourcing its fallback from a PROJECT-scoped last_why removes the conversation hash from the
+// path entirely: writer and reader only need to agree on the PROJECT, which the slug-based
+// projectHash makes robust to conversation drift (a stale anchor pointing at an older
+// transcript of the SAME project still yields the same projectHash — the real-world case).
+//
+// Project-scoped by construction → no cross-project contamination (the failure mode of a
+// scan-by-instance fallback, which cannot tell which project a conversation journal belongs
+// to). Residual limitation, documented not solved: two concurrent same-instance sessions on
+// DIFFERENT projects share one anchor, so write-why could resolve the wrong project's hash —
+// the same shared-anchor limitation that affects all conversation resolution.
+
+// Path to the project-scoped last_why file (~/.claude/.memento/last_why-{projectHash}.json).
+function getLastWhyPath(claudeDir, projectHash) {
+  const dir = path.join(claudeDir, '.memento');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+  return path.join(dir, `last_why-${projectHash}.json`);
+}
+
+// Atomic, symlink-safe write of { why, at } (mirrors writeCtxBridge's hardening). Silent-fail.
+function writeLastWhy(lastWhyPath, why) {
+  if (typeof why !== 'string' || !why) return;
+  let tempPath;
+  try {
+    const dir  = path.dirname(lastWhyPath);
+    const base = path.basename(lastWhyPath);
+    fs.mkdirSync(dir, { recursive: true });
+
+    let realDir;
+    try {
+      const lstat = fs.lstatSync(dir);
+      if (lstat.isSymbolicLink()) {
+        realDir = fs.realpathSync(dir);
+        const realStat = fs.statSync(realDir);
+        if (!realStat.isDirectory()) return;
+        if (typeof process.getuid === 'function') {
+          if (realStat.uid !== process.getuid()) return;
+        } else {
+          const normalizedReal = path.resolve(realDir).toLowerCase();
+          const normalizedHome = path.resolve(os.homedir()).toLowerCase();
+          if (!normalizedReal.startsWith(normalizedHome + path.sep) && normalizedReal !== normalizedHome) return;
+        }
+      } else {
+        realDir = dir;
+      }
+    } catch (e) { return; }
+
+    const realPath = path.join(realDir, base);
+    try {
+      if (fs.lstatSync(realPath).isSymbolicLink()) return;
+    } catch (e) {
+      if (e.code !== 'ENOENT') return;
+    }
+
+    // Sanitize before storing (collapse newlines/whitespace) so the mirror is single-line and
+    // consistent with the journal/bridge — defense-in-depth even though bridge consumption also
+    // sanitizes. Then cap at MAX_WHY_CHARS.
+    const cleanWhy = sanitizeLine(String(why)).slice(0, MAX_WHY_CHARS);
+    if (!cleanWhy) return;
+    const json = JSON.stringify({ why: cleanWhy, at: new Date().toISOString() });
+    tempPath = path.join(realDir, `.last-why.${process.pid}.${Date.now()}.tmp`);
+    const O_NOFOLLOW = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    const openFlags  = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW;
+    let fd;
+    try {
+      fd = fs.openSync(tempPath, openFlags, 0o600);
+      fs.writeSync(fd, json);
+      try { fs.fchmodSync(fd, 0o600); } catch (e) {}
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch (e) {}
+    }
+    fs.renameSync(tempPath, realPath);
+  } catch (e) {
+    if (tempPath) { try { fs.unlinkSync(tempPath); } catch (_) {} }
+    if (DEBUG) process.stderr.write(`[memento] writeLastWhy error: ${e.message}\n`);
+  }
+}
+
+// Read { why, at }; returns it ONLY if written within maxAgeMs. Fails CLOSED: a
+// non-positive/invalid maxAgeMs rejects everything (never resurrects unbounded-age intent).
+// symlink-safe read (lstat + O_NOFOLLOW). Returns { why, at } or null.
+function readLastWhy(lastWhyPath, maxAgeMs) {
+  try {
+    if (typeof maxAgeMs !== 'number' || !(maxAgeMs > 0)) return null;
+    let st;
+    try { st = fs.lstatSync(lastWhyPath); } catch (e) { return null; }
+    if (st.isSymbolicLink() || !st.isFile()) return null;
+
+    const O_NOFOLLOW = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    let fd, raw;
+    try {
+      fd = fs.openSync(lastWhyPath, fs.constants.O_RDONLY | O_NOFOLLOW);
+      raw = fs.readFileSync(fd, 'utf8');
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch (e) {}
+    }
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj.why !== 'string' || typeof obj.at !== 'string') return null;
+    const t = Date.parse(obj.at);
+    if (isNaN(t)) return null;
+    if ((Date.now() - t) > maxAgeMs) return null;
+    return { why: obj.why, at: obj.at };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -835,6 +956,9 @@ module.exports = {
   writeCtxBridge,
   readCtxBridge,
   deleteCtxBridge,
+  getLastWhyPath,
+  writeLastWhy,
+  readLastWhy,
   DEBUG,
   MAX_WHY_CHARS,
   MAX_WHY_HISTORY,

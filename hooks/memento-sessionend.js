@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionEnd hook (v0.8.1)
+// memento — SessionEnd hook (v0.8.2)
 //
 // Runs when Claude Code session ends (clean exit, crash, or interrupt).
 // Writes a minimal ctx_bridge.json from journal.why so that on restart,
@@ -59,7 +59,8 @@ function main() {
 
   // Resolve conversation identity from the live transcript (refreshes the anchor).
   const { conversationHash, jsonlPath: anchoredJsonl } = resolveConversation(claudeDir, instanceTag, transcriptPath);
-  const effectiveHash = conversationHash || getProjectHash();
+  const projectTranscript = anchoredJsonl || transcriptPath;
+  const effectiveHash = conversationHash || getProjectHash(projectTranscript);
   const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
   const journal       = readJournal(journalPath);
 
@@ -84,7 +85,7 @@ function main() {
   //
   // Project-scoped key (not conversation-scoped): the bridge must be readable by the
   // NEXT conversation, which has a different conversation hash. See activate.js.
-  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash(projectTranscript));
   if (!readCtxBridge(bridgePath) && why) {
     writeCtxBridge(bridgePath, {
       files: [],

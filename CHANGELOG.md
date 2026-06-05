@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.2 — 2026-06-05
+
+Completes the v0.8.1 cross-session fix. v0.8.1 correctly switched the context bridge from a per-conversation key to a per-project key, but it derived "the project" from the git root of the hook's working directory. That working directory is not stable: it can differ between the SessionStart hook (the reader) and the SessionEnd/PreCompact hook (the writer), and a **nested git repository** (a sub-project checked out inside your workspace) makes `git rev-parse` resolve a different root than the workspace itself. When reader and writer resolved different roots they computed different keys and the handoff silently failed — the same "No prior journal" symptom v0.8.1 set out to fix, in a narrower set of conditions.
+
+- **Fixed**: the project key is now derived from the **project slug in the transcript path** (`~/.claude/projects/<slug>/<uuid>.jsonl`) — the harness's own per-project identifier, which every hook receives identically on stdin and which does not depend on the working directory. A cwd change or a nested git repo can no longer split the key between reader and writer. Resolution order is now: `MEMENTO_PROJECT_HASH` override → transcript slug → `CLAUDE_PROJECT_DIR` → git root (legacy fallback) → cwd. The bridge stays project-scoped and the journal stays conversation-scoped, exactly as in v0.8.1.
+- **Tests**: added regression coverage proving the project hash is identical across working directories for the same transcript, and that SessionStart surfaces a bridge whose key was computed from a different working directory than the hook runs in (the nested-repo case). Suite is 170 checks.
+
 ## v0.8.1 — 2026-06-05
 
 Fixes a bug that silently disabled cross-session recovery. The context bridge is meant to hand recovery context from a finished conversation to the next one you start — but since v0.7.0 it was keyed by conversation, so a brand-new session looked for it under a key the previous session never wrote. A fresh start would report "No prior journal" even when the previous session had left clear intent. Resume and compaction within the same session were unaffected; only the cross-session handoff was broken.

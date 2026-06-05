@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — SessionStart hook (v0.8.1)
+// memento — SessionStart hook (v0.8.2)
 //
 // Runs once per session start (including after compaction and on resume).
 //
@@ -63,8 +63,9 @@ function run(rawInput) {
   // Resolve conversation identity from the live transcript on stdin (authoritative),
   // refreshing the session anchor so this and every later hook track the live
   // conversation rather than a prior session's frozen transcript.
-  const { conversationHash } = resolveConversation(claudeDir, instanceTag, transcriptPath);
-  const effectiveHash = conversationHash || getProjectHash();
+  const { conversationHash, jsonlPath } = resolveConversation(claudeDir, instanceTag, transcriptPath);
+  const projectTranscript = jsonlPath || transcriptPath;
+  const effectiveHash = conversationHash || getProjectHash(projectTranscript);
 
   const journalPath = getJournalPath(claudeDir, instanceTag, effectiveHash);
   const journal     = readJournal(journalPath);
@@ -94,7 +95,7 @@ function run(rawInput) {
   // made the fresh-start handoff structurally impossible: the new session looked up a
   // bridge under a hash the prior session never wrote. The journal stays
   // conversation-scoped (per-conversation why-chains); the bridge is project-scoped.
-  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash(projectTranscript));
   const bridge     = readCtxBridge(bridgePath);
   let bridgeStr = '';
   if (bridge) {

@@ -160,27 +160,62 @@ function getProjectTag() {
 // Used to namespace all file paths so parallel sessions in different project
 // directories do not share journal, ctx_bridge, or sidecar files.
 //
-// Resolution order:
-//   1. MEMENTO_PROJECT_HASH env var — explicit override (for testing or non-git contexts)
-//   2. SHA-1 of git root path (stable across subdirectory changes within a repo)
-//   3. SHA-1 of cwd (stable within a single hook invocation)
-//   4. "default" — last-resort fallback
-function getProjectHash() {
-  // Honor explicit override (for testing and non-git contexts)
+// The key MUST be identical for every hook in a session and for the next session of
+// the same project — otherwise the ctx_bridge writer and reader look under different
+// keys and the handoff silently fails (the v0.8.1 defect). The harness's own project
+// identity is the only signal that satisfies this; cwd does NOT (it drifts between
+// hook invocations, and a nested git repo makes `git rev-parse` resolve a different
+// root than the harness's project dir — exactly how v0.8.1 split-brained).
+//
+// Resolution order (first match wins):
+//   1. MEMENTO_PROJECT_HASH env var — explicit override (tests / non-git contexts)
+//   2. SHA-1 of the Claude Code project-slug parsed from the transcript path
+//      (~/.claude/projects/<slug>/<uuid>.jsonl). Every hook receives the same
+//      transcript_path on stdin, so all hooks + future sessions agree. cwd-independent.
+//   3. SHA-1 of CLAUDE_PROJECT_DIR, if the harness exposes it
+//   4. SHA-1 of git root path  — legacy fallback for non-harness invocations
+//   5. SHA-1 of cwd, then "default" — last-resort fallbacks
+function getProjectHash(transcriptPath) {
+  // 1. Explicit override (testing / non-git contexts)
   const envHash = process.env.MEMENTO_PROJECT_HASH;
   if (envHash && envHash.trim().length > 0) return envHash.trim();
 
-  // Primary: hash of git root path (stable across subdirectory changes within a repo)
+  // 2. Harness project identity from the transcript path (auto + self-healing:
+  //    cwd cannot split the key, because the same transcript_path reaches every hook).
+  const slug = projectSlugFromTranscript(transcriptPath);
+  if (slug) return crypto.createHash('sha1').update(slug).digest('hex').slice(0, 8);
+
+  // 3. CLAUDE_PROJECT_DIR if the harness exposes it
+  const projDir = (process.env.CLAUDE_PROJECT_DIR || '').trim();
+  if (projDir) return crypto.createHash('sha1').update(projDir).digest('hex').slice(0, 8);
+
+  // 4. Legacy fallback: hash of git root path
   let root;
   try {
     root = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000,
     }).trim();
   } catch (e) {
-    // Fallback: cwd (stable within a single hook invocation)
+    // 5. Fallback: cwd (stable within a single hook invocation)
     try { root = process.cwd(); } catch (e2) { root = 'default'; }
   }
   return crypto.createHash('sha1').update(root).digest('hex').slice(0, 8);
+}
+
+// Extract the Claude Code project-slug directory from a transcript path:
+//   /home/u/.claude/projects/-home-projects/<uuid>.jsonl  ->  "-home-projects"
+// The slug is the harness's own per-project identifier (the directory it groups a
+// project's transcripts under), so it is stable across every hook and every session
+// of that project regardless of cwd. Returns null if the path doesn't match the layout.
+function projectSlugFromTranscript(transcriptPath) {
+  if (!transcriptPath || typeof transcriptPath !== 'string') return null;
+  const parts = transcriptPath.split(/[\\/]/).filter(Boolean);
+  const i = parts.lastIndexOf('projects');
+  if (i === -1 || i + 1 >= parts.length) return null;
+  const slug = parts[i + 1];
+  // The slug must be the PARENT directory of the jsonl file, not the file itself.
+  if (!slug || slug.endsWith('.jsonl')) return null;
+  return slug;
 }
 
 function normalize(tag) {
@@ -772,6 +807,7 @@ module.exports = {
   getInstanceTag,
   getProjectTag,
   getProjectHash,
+  projectSlugFromTranscript,
   getConversationHash,
   getSessionAnchorPath,
   readSessionAnchor,

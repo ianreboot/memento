@@ -566,6 +566,93 @@ test('startup: a conversation-hash-keyed bridge is NOT consumed (regression guar
 });
 
 // ---------------------------------------------------------------------------
+// memento-config.js / activate — project hash derived from the harness transcript
+// slug, NOT cwd (v0.8.2 regression)
+//
+// v0.8.1 keyed the bridge by git-root-of-cwd. cwd drifts between hook invocations,
+// and a nested git repo (e.g. a sub-project inside the workspace) makes
+// `git rev-parse` resolve a different root than the harness's project — so the
+// SessionStart reader and the SessionEnd writer computed DIFFERENT keys and the
+// handoff silently failed. v0.8.2 keys by the project-slug parsed from the
+// transcript_path, which every hook receives identically regardless of cwd.
+// ---------------------------------------------------------------------------
+
+console.log('\nmemento-config.js (transcript-slug project hash)');
+
+test('getProjectHash keys on the transcript project-slug, independent of cwd or the rest of the path', () => {
+  const tpA = '/home/alice/.claude/projects/-home-acme/aaaaaaaa.jsonl';
+  const tpB = '/var/whatever/deeper/projects/-home-acme/bbbbbbbb.jsonl';
+  // Same slug (-home-acme), unrelated surrounding paths → identical hash.
+  assert.strictEqual(
+    mementoConfig.getProjectHash(tpA),
+    mementoConfig.getProjectHash(tpB),
+    'hash must derive from the project slug, not the full transcript path');
+  // With a slug present, the hash must NOT fall back to the cwd git-root.
+  assert.notStrictEqual(
+    mementoConfig.getProjectHash(tpA),
+    mementoConfig.getProjectHash(),
+    'a transcript slug must take precedence over the cwd git-root fallback');
+  // Slug extraction edge cases.
+  assert.strictEqual(mementoConfig.projectSlugFromTranscript(tpA), '-home-acme');
+  assert.strictEqual(mementoConfig.projectSlugFromTranscript('/no/slug/here.jsonl'), null);
+  assert.strictEqual(mementoConfig.projectSlugFromTranscript(null), null);
+});
+
+test('startup: activate surfaces a bridge keyed by the transcript slug even when the hook cwd git-root differs (nested-repo handoff)', () => {
+  const dir = tmpDir();
+  // Realistic harness transcript layout: <claudeDir>/projects/<slug>/<uuid>.jsonl
+  const realisticTP = path.join(dir, 'projects', '-home-acme', 'new-conv.jsonl');
+
+  const slugHash = mementoConfig.getProjectHash(realisticTP); // what every hook computes
+  const cwdHash  = mementoConfig.getProjectHash();            // legacy cwd-git-root value
+  assert.notStrictEqual(slugHash, cwdHash,
+    'precondition: slug hash must differ from cwd hash so the test can tell which the hook used');
+
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const bridgePath = path.join(mementoDir, `ctx_bridge-${slugHash}.json`);
+  fs.writeFileSync(bridgePath, JSON.stringify({
+    files: ['/src/x.js'], next: 'cross-cwd handoff must work', err: null,
+    left: 40000, at: new Date().toISOString(),
+  }, null, 2));
+
+  const stdin = JSON.stringify({ source: 'startup', transcript_path: realisticTP });
+  const r = runHook('memento-activate.js', stdin, {
+    CLAUDE_CONFIG_DIR: dir, MEMENTO_PROJECT_HASH: '', CLAUDE_PROJECT_DIR: '',
+  });
+
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.stdout.includes('[CTX BRIDGE]'),
+    'activate must surface the slug-keyed bridge — proving it keyed by transcript slug, not cwd git-root');
+  assert.ok(r.stdout.includes('cross-cwd handoff must work'), 'must show next from the slug-keyed bridge');
+  assert.ok(!fs.existsSync(bridgePath), 'one-shot: slug-keyed bridge deleted after pickup');
+});
+
+test('startup: a bridge at the legacy cwd-git-root key is NOT consumed once the transcript provides a slug', () => {
+  const dir = tmpDir();
+  const realisticTP = path.join(dir, 'projects', '-home-acme', 'conv2.jsonl');
+  const slugHash = mementoConfig.getProjectHash(realisticTP);
+  const cwdHash  = mementoConfig.getProjectHash();
+  assert.notStrictEqual(slugHash, cwdHash, 'precondition: keys differ');
+
+  const mementoDir = path.join(dir, '.memento');
+  fs.mkdirSync(mementoDir, { recursive: true });
+  const legacyPath = path.join(mementoDir, `ctx_bridge-${cwdHash}.json`);
+  fs.writeFileSync(legacyPath, JSON.stringify({
+    files: [], next: 'legacy cwd-keyed bridge', err: null,
+    left: 40000, at: new Date().toISOString(),
+  }, null, 2));
+
+  const stdin = JSON.stringify({ source: 'startup', transcript_path: realisticTP });
+  const r = runHook('memento-activate.js', stdin, {
+    CLAUDE_CONFIG_DIR: dir, MEMENTO_PROJECT_HASH: '',
+  });
+  assert.ok(!r.stdout.includes('[CTX BRIDGE]'),
+    'the slug key is authoritative — a legacy cwd-keyed file is not the bridge path');
+  assert.ok(fs.existsSync(legacyPath), 'legacy cwd-keyed file left untouched');
+});
+
+// ---------------------------------------------------------------------------
 // memento-tracker.js — ctx_bridge directive
 // ---------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.8.1)
+// memento — UserPromptSubmit hook (v0.8.2)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -69,7 +69,8 @@ function run(rawInput) {
   // Resolve conversation identity. The live transcript_path wins; at T1 this also
   // (re)writes the session anchor. Falls back to anchor/scan when stdin lacks it.
   const { conversationHash, jsonlPath } = resolveConversation(claudeDir, instanceTag, transcriptPath);
-  const effectiveHash = conversationHash || getProjectHash();
+  const projectTranscript = jsonlPath || transcriptPath;
+  const effectiveHash = conversationHash || getProjectHash(projectTranscript);
   const journalPath   = getJournalPath(claudeDir, instanceTag, effectiveHash);
 
   // Fixed per-instance turn counter and last-ctx paths (no hash dependency)
@@ -114,7 +115,7 @@ function run(rawInput) {
   // conversation handoff, so it must use a key stable across conversations. The same
   // path serves in-session compaction re-injection (projectHash is stable within a
   // session too) and the cross-session pickup in activate.js. See activate.js.
-  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash());
+  const bridgePath = getCtxBridgePath(claudeDir, getProjectHash(projectTranscript));
 
   // Drop detection: a real drop in total context tokens means a compaction just
   // occurred (context only grows between turns otherwise). Measured in tokens, so a

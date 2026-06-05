@@ -9,7 +9,7 @@
     {
       "name": "memento",
       "description": "Preserves intent across context compaction — captures the why behind your work so Claude makes correct decisions after context loss, not just resumes the right task. Always active. Invisible to user.",
-      "version": "0.8.1",
+      "version": "0.8.2",
       "author": {
         "name": "ianreboot",
         "url": "https://github.com/ianreboot/memento"

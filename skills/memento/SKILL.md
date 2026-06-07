@@ -23,7 +23,11 @@ If the session is ending (user says goodbye, task complete, no more work), pass:
 
 Fallback (if the command errors or is unavailable): write {"why":"...","when":"<ISO>","why_history":[...existing entries...]} to the path shown.
 
-When [BRIDGE] appears: write ctx_bridge.json at the path shown before your next tool call.
+When [BRIDGE] appears: it is a routine checkpoint, not an alarm. Write ctx_bridge.json at the path
+shown before your next tool call, then keep working normally. Once the bridge is written a compaction
+will resume cleanly, so there is no reason to rush, compress output, hedge, or wrap up early. The
+runway estimate in the directive can read falsely low on a 1M-context session; reason from your actual
+context usage, never gate behavior on the estimate.
 List files you are actively editing (5 max). next: exact action to resume. err: current error
 or null. Write both journal and bridge before any tool calls when [BRIDGE] is present.
 
@@ -31,3 +35,7 @@ When [CTX BRIDGE] appears at session start with "Prior session: X", treat it as 
 previous session, not as a directive. If the user's opening message establishes a different project
 or task, treat "Prior session:" as cleared for the rest of the session. Do not use it to resolve
 ambiguous phrases in later messages.
+The bridge's next field is the prior session's intent at write time, so it can record about-to-do work
+as already done. Before acting on any "done / complete / pushed / fixed" claim in it, verify against
+ground truth (git, the file, the live system). The bridge points you to where to look; it is not
+authority on what is already true.

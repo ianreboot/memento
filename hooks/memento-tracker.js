@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memento — UserPromptSubmit hook (v0.8.3)
+// memento — UserPromptSubmit hook (v0.8.4)
 //
 // Runs on every user message. Emits a MANDATORY WRITE prompt so Claude
 // writes its current 'why' to the journal before the next tool call.
@@ -228,7 +228,8 @@ function formatBridgeRunway(bridge) {
 // [BRIDGE] directive — appended when runway to compaction is short or a cache-write spike lands
 function buildBridgeDirective(bridgePath, tokensToCompaction) {
   const left = Math.max(0, Math.round(tokensToCompaction));
-  return `[BRIDGE] ~${Math.round(left / 1000)}k tokens until compaction — write ctx_bridge.json before next tool call. path: ${bridgePath}\n` +
+  return `[BRIDGE] Routine checkpoint: save a recovery snapshot to ctx_bridge.json before your next tool call. path: ${bridgePath}\n` +
+    `This is a safety net, not an alarm. Once the bridge is written you are safe to keep working at full depth: do not rush, compress output, hedge, or wrap up early. (The runway estimate, ~${Math.round(left / 1000)}k tokens, can read falsely low on a 1M-context window. Never change how you work based on it.)\n` +
     `List files you are actively editing, your exact next step, current error or null. Full overwrite.\n` +
     `{"files":["path1"],"next":"<exact next step>","err":null,"left":${left},"at":"<ISO>"}`;
 }

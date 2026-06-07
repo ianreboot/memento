@@ -104,7 +104,7 @@ The trigger is measured in **tokens of runway left**, not a percentage. A fixed 
 
 Only the richest available bridge is used. A bridge written by Claude is never overwritten by the hook fallbacks. On the next session start, the bridge is injected into recovery context and deleted.
 
-**Window-aware by default.** Memento detects a 1M-context session automatically: once observed usage passes the 200k mark — impossible on a 200k window — it treats the window as 1M for the rest of the conversation. No model list to maintain, and a 200k session behaves exactly as before. Set `MEMENTO_CONTEXT_WINDOW_TOKENS=<n>` to state the window explicitly and skip detection.
+**Window-aware by default.** Memento detects a 1M-context session automatically: once observed usage passes the 200k mark (impossible on a 200k window) it treats the window as 1M for the rest of the conversation. No model list to maintain, and a 200k session behaves exactly as before. Because detection is usage-based (Claude Code does not expose the window size to hooks), a 1M session reads as 200k until usage crosses that mark, so the `[BRIDGE]` checkpoint can fire early with a low runway figure before then. That affects only the number, not recovery, and the directive tells Claude not to act on it. On a 1M plan, set `MEMENTO_CONTEXT_WINDOW_TOKENS=1000000` to pin the window from the first turn and skip detection. See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
 **User-visible impact:** None. The bridge is written and consumed silently. On recovery, the extra `[CTX BRIDGE]` line appears in the injected context alongside the normal `why` arc.
 

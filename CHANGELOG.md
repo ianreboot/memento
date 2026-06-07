@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.4 — 2026-06-07
+
+Reframes the `[BRIDGE]` checkpoint as a routine safety net rather than an alarm, so a capable model keeps working at full depth instead of reacting to a runway figure that can read low on large-context sessions.
+
+- **Changed**: the `[BRIDGE]` directive now leads as a routine checkpoint and states that once the bridge is written the session is safe to continue at full depth, with no rushing, compressing, hedging, or wrapping up early. It also notes that the "tokens until compaction" figure can read low on a 1M-context window and should never gate behavior.
+- **Changed**: the skill carries the same "safety net, not an alarm" semantics and tells Claude to reason from actual context usage rather than the runway estimate.
+- **New**: the skill instructs a recovering session to verify a bridge's `next` state claims (done, complete, pushed, fixed) against ground truth before acting on them. The `next` field is the prior session's intent at write time and can record about-to-do work as already done.
+- **Docs**: documented the 1M-context runway behavior and the `MEMENTO_CONTEXT_WINDOW_TOKENS` pin in KNOWN_ISSUES, including the platform limitation that prevents reliable hook-side window detection.
+
 ## v0.8.3 — 2026-06-05
 
 Closes a silent cross-restart recovery failure that survived the v0.8.1/v0.8.2 key-scoping fixes. Those releases made the context bridge project-scoped and gave it a stable, cwd-independent key — but the bridge's *source* still depended on a conversation hash. `write-why` is a plain CLI call with no hook stdin, so it resolves the journal (conversation-scoped) through the per-instance anchor, while the SessionEnd/PreCompact hooks resolve it through the authoritative `transcript_path`. When those two conversation hashes diverge — a stale anchor, an upgrade boundary, a sibling session — `write-why` files the `why` under hash A while the bridge writer reads hash B, finds nothing, and writes no bridge. The next session then starts with no `[CTX BRIDGE]` even though clear intent was recorded.

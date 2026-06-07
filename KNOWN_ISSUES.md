@@ -53,3 +53,21 @@ The tracker emits a `[BRIDGE]` directive when context reaches 74% at the start o
 When a session ends cleanly (user exits Claude Code) without having compacted, the SessionEnd hook writes a minimal bridge containing only `journal.why` as the `next` field. Files being edited and current error state are not captured in this path.
 
 **Coverage**: For sessions that exit cleanly at low context (below 74%), this bridge still provides correct intent direction for the next session. Sessions that hit 74% context before exiting will have a richer bridge from the tracker or PreCompact hook. The SessionEnd bridge is the last-resort fallback and is not written if a richer bridge already exists.
+
+## 9. 1M-context sessions: the runway estimate can read low until usage passes 200k
+
+Claude Code does not expose the active context window size to hooks. The hook payload, the transcript `model` field, and the environment all omit it; the `[1m]` model-id suffix that marks a 1M session is a CLI-level flag that is stripped before the model id reaches the API and the transcript. (This is a platform limitation, not specific to memento: Claude Code's own context-window lookup has the same gap, because its `has1mContext()` check also relies on the `[1m]` suffix that API responses do not carry.)
+
+Memento therefore infers the window from usage: a session is treated as 200k until observed usage passes the 200k mark (impossible on a true 200k window), at which point it latches 1M for the rest of the conversation.
+
+**Consequence**: on a 1M-context session, before usage crosses ~200k the runway is measured against the 200k compaction point, so the `[BRIDGE]` checkpoint can fire early with a low "tokens until compaction" figure even though real headroom is large.
+
+**This does not affect recovery correctness.** The bridge is still written and consumed normally; only the runway *number* is early. The `[BRIDGE]` directive is worded as a routine checkpoint and explicitly tells Claude not to change its behavior based on the figure.
+
+**Fix**: set `MEMENTO_CONTEXT_WINDOW_TOKENS=1000000` to pin the window from the first turn and skip detection. Set it as an environment variable, or in the `env` block of `settings.json`:
+
+```json
+{ "env": { "MEMENTO_CONTEXT_WINDOW_TOKENS": "1000000" } }
+```
+
+Reliable hook-side auto-detection is not currently possible. This will be revisited if Claude Code adds the context window size to the hook payload.

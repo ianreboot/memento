@@ -1,6 +1,11 @@
 
 # memento — Project Instructions
 
+> **DEPRECATED / CLOSED (2026-06-16).** memento is no longer maintained. The public repo
+> `ianreboot/memento` is archived (read-only) and the project receives no further updates or
+> releases. It is not installed on any instance. The notes below are retained for historical
+> reference only. Do not start new work here without Ian's explicit go-ahead.
+
 ## What This Is
 
 A Claude Code skill/plugin that gives Claude persistent task memory across context compaction.
@@ -141,7 +146,7 @@ This is not overhead that can be removed. It is architecturally load-bearing. Th
 bash tests/run.sh
 ```
 
-All 3 test files run automatically (`test_journal_utils.js`, `test_hooks.js`, `test_symlink_safety.js`). If any fail, fix before pushing. Do not push and wait for CI to surface failures that a local run would catch in seconds.
+All test files run automatically via `bash tests/run.sh` (journal-utils, hooks, symlink-safety, version-consistency, and any added since). If any fail, fix before pushing. Do not push and wait for CI to surface failures that a local run would catch in seconds.
 
 ## Key Rules for Contributors
 

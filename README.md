@@ -27,6 +27,11 @@
 
 ---
 
+> [!WARNING]
+> **This project is no longer maintained.** As of June 2026 memento is archived and frozen: no further updates, releases, or bug fixes are planned. The code still works and you are welcome to use or fork it, but issues and pull requests will not be actively triaged.
+
+---
+
 You tell Claude the constraints at the start of a session. An hour later, compaction fires. Claude's summary captures the task list but loses the reasoning. It no longer knows why you're doing it, what's off-limits, or what decision was made and why. Now it's working with the same tasks but wrong assumptions. Or it asks you to re-explain something you already explained.
 
 Memento fixes this. It captures the *why* before every compaction and injects it at recovery, so Claude resumes with the same reasoning, not just the same task list.
